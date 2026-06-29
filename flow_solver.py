@@ -37,8 +37,7 @@ from core.factory import get_platform_adapters, get_hotkey_manager
 from core.input_interface import InputInterface
 from core.vision_interface import VisionInterface
 
-# pynput siempre es útil para escuchar el teclado en modo usuario (si no usamos hotkeys globales)
-from pynput import keyboard as pynput_keyboard
+# Keyboard input handled by evdev (platforms/linux/shortcuts.py)
 
 # ============================================================
 # INITIALIZATION OF ADAPTERS
@@ -2170,122 +2169,43 @@ class FlowPuzzleSolver:
 # ============================================================
 solver = FlowPuzzleSolver(INPUT_ADAPTER, VISION_ADAPTER)
 
-# Global modifier tracking
-pressed_modifiers = set()
-
-def on_press(key):
+def _on_movement_interrupt():
+    """Called by evdev when user presses WASD/arrows/space/shift"""
     global emergency_stop_flag
-    
-    # Track modifiers
-    if key in [pynput_keyboard.Key.alt, pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r,
-               pynput_keyboard.Key.ctrl, pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r,
-               pynput_keyboard.Key.shift, pynput_keyboard.Key.shift_l, pynput_keyboard.Key.shift_r]:
-        pressed_modifiers.add(key)
-        
-    try:
-        # 1. PARADA DE EMERGENCIA (F4)
-        if key == pynput_keyboard.Key.f4:
-            print("\n🛑 [F4] PARADA DE EMERGENCIA ACTIVADA")
-            emergency_stop_flag = True
-            return
-
-        # 2. DETECCIÓN DE MOVIMIENTO HUMANO (WASD + Flechas + Shift + Space)
-        if key in [pynput_keyboard.Key.up, pynput_keyboard.Key.down, 
-                   pynput_keyboard.Key.left, pynput_keyboard.Key.right, 
-                   pynput_keyboard.Key.space]:
-             if solver.is_solving:
-                 print(f"\n🛑 Movimiento detectado ({key}). Cancelando solver.")
-             emergency_stop_flag = True
-             return
-             
-        # Shift special check (since it's also a modifier)
-        if key in [pynput_keyboard.Key.shift, pynput_keyboard.Key.shift_r]:
-             if solver.is_solving:
-                 print(f"\n🛑 Movimiento detectado (Shift). Cancelando solver.")
-             emergency_stop_flag = True
-             return
-
-        # Teclas de carácter (WASD / J)
-        if hasattr(key, 'char') and key.char:
-            char = key.char.lower()
-            if char in ['w', 'a', 's', 'd']:
-                if solver.is_solving:
-                     print(f"\n🛑 Movimiento detectado ({char.upper()}). Cancelando solver.")
-                emergency_stop_flag = True
-                return
-            
-            # ACTIVACIÓN (J)
-            if char == 'j':
-                # Check modifiers using our tracker
-                is_alt_pressed = any(k in pressed_modifiers for k in [pynput_keyboard.Key.alt, pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r])
-                is_ctrl_pressed = any(k in pressed_modifiers for k in [pynput_keyboard.Key.ctrl, pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r])
-                
-                if not is_alt_pressed and not is_ctrl_pressed:
-                    t = threading.Thread(target=solver.solve)
-                    t.start()
-
-    except AttributeError:
-        pass
-
-def on_release(key):
-    # Update modifiers
-    if key in pressed_modifiers:
-        try:
-            pressed_modifiers.remove(key)
-        except KeyError:
-            pass
-
-# Register Alt+J if possible
-# Note: Linux hotkey manager handles global keys. We use pynput for 'J' inside app logic.
+    if solver.is_solving:
+        print(f"\n🛑 Movimiento detectado. Cancelando solver.")
+    emergency_stop_flag = True
 
 def main():
     print("=" * 60)
     print("🎮 Forsaken AutoComplete (Linux Edition)")
-    print("   Platform: " + sys.platform)
+    print(f"   Platform: {sys.platform}")
     print("=" * 60)
-    
-    # 1. Start Modifiers & Input Listener (ALWAYS needed for state tracking)
-    # This listener tracks keys for emergency stop AND modifiers
-    listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
-    listener.start()
-    
-    # 2. Setup Solver Trigger ('J')
-    if HOTKEY_MANAGER:
-        print("   ⌨️  Using Global Hotkey Manager for 'J'")
-        
-        def safe_solve():
-            # Check modifiers before solving to avoid Alt+J conflict
-            is_alt = any(k in pressed_modifiers for k in [pynput_keyboard.Key.alt, pynput_keyboard.Key.alt_l, pynput_keyboard.Key.alt_r])
-            is_ctrl = any(k in pressed_modifiers for k in [pynput_keyboard.Key.ctrl, pynput_keyboard.Key.ctrl_l, pynput_keyboard.Key.ctrl_r])
-            
-            if not is_alt and not is_ctrl:
-                threading.Thread(target=solver.solve).start()
-            else:
-                print(f"   ⚠️ 'J' ignored because modifiers are held: {pressed_modifiers}")
 
-        HOTKEY_MANAGER.register('j', safe_solve)
+    # 1. Setup all hotkeys via evdev (no pynput needed)
+    if HOTKEY_MANAGER:
+        print("   ⌨️  Using evdev Hotkey Manager")
+
+        # F4 = emergency stop
+        def on_f4():
+            global emergency_stop_flag
+            print("\n🛑 [F4] PARADA DE EMERGENCIA ACTIVADA")
+            emergency_stop_flag = True
+        HOTKEY_MANAGER.register('F4', on_f4)
+
+        # J = solve puzzle
+        HOTKEY_MANAGER.register('j', lambda: threading.Thread(target=solver.solve).start())
+
+        # Alt+J = grid selector
+        HOTKEY_MANAGER.register_combo('alt+j', open_grid_selector)
+
+        # WASD/arrows/space/shift = movement interrupt
+        HOTKEY_MANAGER.register_movement_interrupt(_on_movement_interrupt)
+
         HOTKEY_MANAGER.start()
     else:
-        print("   ⌨️  Using Pynput Listener for 'J' (Fallback)")
-        # on_press already handles 'J' logic
-        pass
+        print("   ⚠️  No evdev hotkey manager available!")
 
-    # 3. Setup Grid Selector (Alt+J) via evdev combo
-    if HOTKEY_MANAGER:
-        try:
-            HOTKEY_MANAGER.register_combo('alt+j', open_grid_selector)
-        except Exception as e:
-            print(f"⚠️ Error hooking Alt+J: {e}")
-    else:
-        # Fallback: pynput GlobalHotKeys (X11 only)
-        try:
-            hk = pynput_keyboard.GlobalHotKeys({
-                '<alt>+j': open_grid_selector
-            })
-            hk.start()
-        except Exception as e:
-            print(f"⚠️ Error hooking Alt+J: {e}")
-        
     # --- INTERFAZ GRÁFICA (GUI) ---
     try:
         root = tk.Tk()

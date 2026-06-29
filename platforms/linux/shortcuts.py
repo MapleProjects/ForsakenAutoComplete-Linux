@@ -3,78 +3,73 @@ from evdev import ecodes
 import threading
 import select
 import glob
-from typing import Callable, Dict, Tuple, Set
+from typing import Callable, Dict, Set
 
 class LinuxHotkeys:
     """
-    Monitors input devices for Global Hotkeys on Linux.
-    Works on Wayland by reading raw /dev/input/events via 'uaccess' permissions.
-    Supports single keys AND modifier combos (e.g. alt+j).
+    Full keyboard manager via evdev for Wayland.
+    Handles hotkeys (F4, Alt+J), solver trigger (J), and human interrupt detection (WASD/arrows).
+    No pynput needed.
     """
 
-    # Modifier key codes
     MODIFIER_CODES = {
         ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT,
         ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL,
         ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT,
     }
 
+    # Movement keys that indicate human input
+    MOVEMENT_CODES = {
+        ecodes.KEY_W, ecodes.KEY_A, ecodes.KEY_S, ecodes.KEY_D,
+        ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
+        ecodes.KEY_SPACE, ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT,
+    }
+
     def __init__(self):
         self.running = False
         self.single_callbacks: Dict[int, Callable] = {}
-        self.combo_callbacks: Dict[Tuple[frozenset, int], Callable] = {}
-        self.devices = []
+        self.combo_callbacks: Dict[tuple, Callable] = {}
+        self.movement_callback: Callable = None
         self.thread = None
         self.pressed_modifiers: Set[int] = set()
+        self.devices = []
 
     def register(self, key_name: str, callback: Callable):
-        """
-        Register a single-key hotkey callback.
-        key_name: 'F4', 'J', etc.
-        """
+        """Register a single-key hotkey (F4, J, etc.)"""
         key_code = getattr(ecodes, f"KEY_{key_name.upper()}", None)
         if key_code:
             self.single_callbacks[key_code] = callback
             print(f"   ⌨️  Registered hotkey listener for: {key_name}")
-        else:
-            print(f"   ⚠️  Unknown key for hotkey: {key_name}")
 
     def register_combo(self, combo: str, callback: Callable):
-        """
-        Register a modifier+key combo callback.
-        combo format: 'alt+j', 'ctrl+shift+s', etc.
-        """
+        """Register a modifier+key combo (alt+j, ctrl+shift+s, etc.)"""
         parts = [p.strip().lower() for p in combo.split('+')]
         if len(parts) < 2:
-            print(f"   ⚠️  Invalid combo format: {combo}")
             return
 
         key_name = parts[-1]
-        mod_names = parts[:-1]
-
         key_code = getattr(ecodes, f"KEY_{key_name.upper()}", None)
         if not key_code:
             print(f"   ⚠️  Unknown key in combo: {key_name}")
             return
 
         mod_codes = set()
-        for m in mod_names:
+        for m in parts[:-1]:
             if m == 'alt':
                 mod_codes.update({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT})
             elif m == 'ctrl':
                 mod_codes.update({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL})
             elif m == 'shift':
                 mod_codes.update({ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT})
-            else:
-                print(f"   ⚠️  Unknown modifier: {m}")
-                return
 
-        # Store as frozenset of active mods -> key_code
         self.combo_callbacks[(frozenset(mod_codes), key_code)] = callback
         print(f"   ⌨️  Registered combo listener for: {combo}")
 
+    def register_movement_interrupt(self, callback: Callable):
+        """Register callback for when user presses movement keys (WASD, arrows, space, shift)"""
+        self.movement_callback = callback
+
     def start(self):
-        """Start the monitoring thread"""
         self.running = True
         self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.thread.start()
@@ -82,51 +77,40 @@ class LinuxHotkeys:
     def stop(self):
         self.running = False
 
-    def _monitor_loop(self):
-        """Scans for keyboards and listens to them."""
-        print("   🔍 Scanning input devices...")
-        available_devices = []
-        try:
-            paths = glob.glob('/dev/input/event*')
-            print(f"      Visible files: {len(paths)}")
-
-            for path in paths:
-                try:
-                    d = evdev.InputDevice(path)
-                    available_devices.append(d)
-                except Exception as ex:
-                    print(f"      ❌ Failed to open {path}: {ex}")
-
-        except Exception as e:
-            print(f"   ❌ Error listing devices: {e}")
-
+    def _find_keyboards(self):
+        """Find accessible keyboard devices"""
         keyboards = []
+        paths = glob.glob('/dev/input/event*')
 
-        for dev in available_devices:
-            print(f"      - Device: {dev.name} ({dev.path})")
-            caps = dev.capabilities()
-            if ecodes.EV_KEY in caps:
-                if ecodes.KEY_ENTER in caps[ecodes.EV_KEY]:
+        for path in paths:
+            try:
+                d = evdev.InputDevice(path)
+                caps = d.capabilities()
+                if ecodes.EV_KEY in caps and ecodes.KEY_ENTER in caps[ecodes.EV_KEY]:
                     try:
-                        dev.grab()
-                        dev.ungrab()
-                        keyboards.append(dev)
-                        print(f"        ✅ Identified as Keyboard (Active)")
-                    except OSError as e:
-                        print(f"        ⛔ No permission: {e}")
-                else:
-                    print("        (Skipped: No ENTER key)")
-            else:
-                print("        (Skipped: No EV_KEY)")
+                        d.grab()
+                        d.ungrab()
+                        keyboards.append(d)
+                        print(f"   ✅ Keyboard: {d.name} ({d.path})")
+                    except OSError:
+                        pass
+            except Exception:
+                pass
+
+        return keyboards
+
+    def _monitor_loop(self):
+        print("   🔍 Scanning keyboards...")
+        keyboards = self._find_keyboards()
 
         if not keyboards:
-            print("   ⚠️  No accessible keyboards found. Killswitch might not work.")
+            print("   ⚠️  No accessible keyboards found.")
             return
 
         fds = {dev.fd: dev for dev in keyboards}
 
         while self.running:
-            r, w, x = select.select(fds, [], [], 0.5)
+            r, _, _ = select.select(fds, [], [], 0.5)
             for fd in r:
                 dev = fds[fd]
                 try:
@@ -134,31 +118,33 @@ class LinuxHotkeys:
                         if event.type != ecodes.EV_KEY:
                             continue
 
-                        # Track modifier state
+                        # Track modifiers
                         if event.code in self.MODIFIER_CODES:
-                            if event.value in (1, 2):  # Down or repeat
+                            if event.value in (1, 2):
                                 self.pressed_modifiers.add(event.code)
-                            elif event.value == 0:  # Up
+                            elif event.value == 0:
                                 self.pressed_modifiers.discard(event.code)
                             continue
 
-                        # Only trigger on key down (value == 1)
+                        # Only key-down events
                         if event.value != 1:
                             continue
 
-                        # Check single-key callbacks
-                        if event.code in self.single_callbacks:
-                            # Don't fire single key if modifiers are held
+                        # Check movement keys (human interrupt)
+                        if event.code in self.MOVEMENT_CODES and self.movement_callback:
                             if not self.pressed_modifiers:
-                                print(f"   🛑 Hotkey Trigger: {ecodes.KEY.get(event.code, event.code)}")
+                                self.movement_callback()
+                                continue
+
+                        # Check single-key callbacks (F4, J)
+                        if event.code in self.single_callbacks:
+                            if not self.pressed_modifiers:
                                 self.single_callbacks[event.code]()
 
-                        # Check combo callbacks
+                        # Check combo callbacks (Alt+J, etc.)
                         active_mods = frozenset(self.pressed_modifiers)
                         for (mod_set, key_code), callback in self.combo_callbacks.items():
                             if event.code == key_code and active_mods == mod_set:
-                                mod_names = [ecodes.KEY.get(m, str(m)) for m in active_mods]
-                                print(f"   🛑 Combo Trigger: {'+'.join(mod_names)}+{ecodes.KEY.get(key_code, key_code)}")
                                 callback()
                                 break
 
