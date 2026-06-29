@@ -57,16 +57,16 @@ class LinuxHotkeys:
             print(f"   ⚠️  Unknown key in combo: {key_name}")
             return
 
-        # Each mod group is a set of equivalent keys (e.g. LEFTALT or RIGHTALT)
+        # Each mod group is a frozenset of equivalent keys (e.g. LEFTALT or RIGHTALT)
         # User must hold at least one from each group
         mod_groups = []
         for m in parts[:-1]:
             if m == 'alt':
-                mod_groups.append({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT})
+                mod_groups.append(frozenset({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT}))
             elif m == 'ctrl':
-                mod_groups.append({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL})
+                mod_groups.append(frozenset({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL}))
             elif m == 'shift':
-                mod_groups.append({ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT})
+                mod_groups.append(frozenset({ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT}))
             else:
                 print(f"   ⚠️  Unknown modifier: {m}")
                 return
