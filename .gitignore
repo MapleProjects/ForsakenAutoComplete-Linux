@@ -9,3 +9,4 @@ dist/
 .eggs/
 *.so
 *.o
+debug_*.png
