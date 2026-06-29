@@ -2270,16 +2270,21 @@ def main():
         # on_press already handles 'J' logic
         pass
 
-    # 3. Setup Grid Selector (Alt+J)
-    # We use pynput GlobalHotkeys because it's good at combos
-    hk = None
-    try:
-        hk = pynput_keyboard.GlobalHotKeys({
-            '<alt>+j': open_grid_selector
-        })
-        hk.start()
-    except Exception as e:
-        print(f"⚠️ Error hooking Alt+J: {e}")
+    # 3. Setup Grid Selector (Alt+J) via evdev combo
+    if HOTKEY_MANAGER:
+        try:
+            HOTKEY_MANAGER.register_combo('alt+j', open_grid_selector)
+        except Exception as e:
+            print(f"⚠️ Error hooking Alt+J: {e}")
+    else:
+        # Fallback: pynput GlobalHotKeys (X11 only)
+        try:
+            hk = pynput_keyboard.GlobalHotKeys({
+                '<alt>+j': open_grid_selector
+            })
+            hk.start()
+        except Exception as e:
+            print(f"⚠️ Error hooking Alt+J: {e}")
         
     # --- INTERFAZ GRÁFICA (GUI) ---
     try:
