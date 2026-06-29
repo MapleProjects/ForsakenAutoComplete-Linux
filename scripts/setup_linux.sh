@@ -24,6 +24,7 @@ sudo pacman -S --needed --noconfirm \
     python-numpy \
     python-pillow \
     grim \
+    ydotool \
     jq
 
 # 3. Install Python Dependencies

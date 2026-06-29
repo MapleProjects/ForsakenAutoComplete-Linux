@@ -5,6 +5,8 @@ except ImportError:
     evdev = None
     ecodes = None
 
+import os
+import subprocess
 import time
 import math
 from typing import Dict
@@ -12,18 +14,22 @@ from core.input_interface import InputInterface
 
 class LinuxInput(InputInterface):
     """
-    Implementation of InputInterface using evdev for Linux (Kernel Level)
+    Implementation of InputInterface using evdev (keyboard) + ydotool (mouse).
+    evdev uinput for keyboard events, ydotool for mouse movement on Wayland.
     """
     
-    # Virtual Screen Resolution for Absolute Positioning
-    # We use a high resolution to mapping effectively to any screen size
-    ABS_MAX = 32768 
-
+    # ydotool button codes
+    _BTN_LEFT_DOWN = '0x40'
+    _BTN_LEFT_UP   = '0x80'
+    _BTN_LEFT_CLICK = '0xC0'
+    _BTN_RIGHT_DOWN = '0x41'
+    _BTN_RIGHT_UP   = '0x81'
+    
     def __init__(self):
         if not evdev:
             raise ImportError("evdev is required for LinuxInput. Run setup_linux.sh first.")
 
-        # Define capabilities for the virtual device
+        # Create uinput device for KEYBOARD events only
         cap = {
             ecodes.EV_KEY: [
                 ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT,
@@ -34,25 +40,53 @@ class LinuxInput(InputInterface):
                 ecodes.KEY_UP, ecodes.KEY_DOWN, ecodes.KEY_LEFT, ecodes.KEY_RIGHT,
                 ecodes.KEY_J, ecodes.KEY_W, ecodes.KEY_A, ecodes.KEY_S, ecodes.KEY_D,
                 ecodes.KEY_F4, 
-                # Mouse buttons
-                ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE
             ],
-            ecodes.EV_ABS: [
-                (ecodes.ABS_X, evdev.AbsInfo(value=0, min=0, max=self.ABS_MAX, fuzz=0, flat=0, resolution=0)),
-                (ecodes.ABS_Y, evdev.AbsInfo(value=0, min=0, max=self.ABS_MAX, fuzz=0, flat=0, resolution=0)),
-            ]
         }
         
-        # Create virtual device
-        # Note: 'uinput' device creation usually requires udev rules logic we set up in setup_linux.sh
         try:
             self.ui = evdev.UInput(cap, name='Forsaken-Auto-Input', version=0x1)
         except PermissionError:
             raise PermissionError("Could not create uinput device. Permission denied. Did you run setup_linux.sh and reload udev rules?")
 
         self._key_map = self._build_key_map()
-        self.screen_width = 1920 # Default, should be updated by vision system or config
+        self.screen_width = 1920
         self.screen_height = 1080
+        
+        # Find ydotool socket
+        self._ydotool_socket = self._find_ydotool_socket()
+
+    def _find_ydotool_socket(self) -> str:
+        """Find the ydotoold socket path."""
+        # Check environment variable first
+        env_socket = os.environ.get('YDOTOOL_SOCKET')
+        if env_socket and os.path.exists(env_socket):
+            return env_socket
+        
+        # Common locations
+        uid = os.getuid()
+        candidates = [
+            f'/run/user/{uid}/.ydotool_socket',
+            '/tmp/.ydotool_socket',
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        
+        return f'/run/user/{uid}/.ydotool_socket'  # Default
+
+    def _ydotool(self, *args):
+        """Execute a ydotool command."""
+        env = os.environ.copy()
+        env['YDOTOOL_SOCKET'] = self._ydotool_socket
+        try:
+            subprocess.run(
+                ['ydotool'] + [str(a) for a in args],
+                env=env, capture_output=True, timeout=2
+            )
+        except FileNotFoundError:
+            print("⚠️ ydotool not found. Install with: pacman -S ydotool")
+        except subprocess.TimeoutExpired:
+            pass  # Ignore timeouts on mouse moves
 
     def set_screen_resolution(self, width: int, height: int):
         self.screen_width = width
@@ -80,8 +114,6 @@ class LinuxInput(InputInterface):
         k = key_code.lower()
         if k in self._key_map:
             return self._key_map[k]
-        
-        # Try finding by attribute name in ecodes
         try:
             return getattr(ecodes, f"KEY_{k.upper()}")
         except AttributeError:
@@ -107,50 +139,33 @@ class LinuxInput(InputInterface):
             self.ui.write(ecodes.EV_KEY, code, 0)
             self.ui.syn()
 
-    def move_mouse(self, x: int, y: int):
-        # Convert pixel coordinates to absolute device coordinates
-        # x / width * ABS_MAX
-        abs_x = int((x / self.screen_width) * self.ABS_MAX)
-        abs_y = int((y / self.screen_height) * self.ABS_MAX)
-        
-        # Clamp
-        abs_x = max(0, min(self.ABS_MAX, abs_x))
-        abs_y = max(0, min(self.ABS_MAX, abs_y))
+    # ===== MOUSE: via ydotool (Wayland-compatible) =====
 
-        self.ui.write(ecodes.EV_ABS, ecodes.ABS_X, abs_x)
-        self.ui.write(ecodes.EV_ABS, ecodes.ABS_Y, abs_y)
-        self.ui.syn()
+    def move_mouse(self, x: int, y: int):
+        self._ydotool('mousemove', '-a', '-x', str(int(x)), '-y', str(int(y)))
 
     def mouse_down(self, button: str = 'left'):
-        btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
-        self.ui.write(ecodes.EV_KEY, btn_code, 1)
-        self.ui.syn()
+        btn = self._BTN_LEFT_DOWN if button == 'left' else self._BTN_RIGHT_DOWN
+        self._ydotool('click', btn)
 
     def mouse_up(self, button: str = 'left'):
-        btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
-        self.ui.write(ecodes.EV_KEY, btn_code, 0)
-        self.ui.syn()
+        btn = self._BTN_LEFT_UP if button == 'left' else self._BTN_RIGHT_UP
+        self._ydotool('click', btn)
 
     def click(self, x: int, y: int, button: str = 'left'):
         self.move_mouse(x, y)
-        btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
-        
-        self.ui.write(ecodes.EV_KEY, btn_code, 1)
-        self.ui.syn()
-        time.sleep(0.01) # Small delay for registration
-        self.ui.write(ecodes.EV_KEY, btn_code, 0)
-        self.ui.syn()
+        time.sleep(0.02)
+        btn = self._BTN_LEFT_CLICK if button == 'left' else '0xC1'
+        self._ydotool('click', btn)
 
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.0):
         self.move_mouse(start_x, start_y)
         time.sleep(0.05)
         
-        self.ui.write(ecodes.EV_KEY, ecodes.BTN_LEFT, 1)
-        self.ui.syn()
+        self.mouse_down()
         
         if duration > 0:
-            # Interpolate movement
-            steps = int(duration * 60) # 60 Hz 
+            steps = int(duration * 60)
             for i in range(steps):
                 t = (i + 1) / steps
                 curr_x = int(start_x + (end_x - start_x) * t)
@@ -160,5 +175,4 @@ class LinuxInput(InputInterface):
         else:
             self.move_mouse(end_x, end_y)
             
-        self.ui.write(ecodes.EV_KEY, ecodes.BTN_LEFT, 0)
-        self.ui.syn()
+        self.mouse_up()

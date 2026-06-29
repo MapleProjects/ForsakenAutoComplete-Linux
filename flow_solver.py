@@ -69,7 +69,7 @@ def resource_path(relative_path):
 # CONFIGURACIÓN
 # ============================================================
 GRID_SIZE = 6  # Siempre 6x6
-DEBUG_MODE = False # Activado para ver imágenes de debug (User request)
+DEBUG_MODE = True # Temporal: ver detección de colores auto
 AUTO_ADJUST_GRID_ON_SOLVE = True # Si True, intenta detectar y centrar el grid automáticamente al pulsar J
 
 # CRONOMETRAJE (Segundos)
@@ -173,23 +173,19 @@ def save_manual_config():
 load_config()
 
 # ============================================================
-# RANGOS HSV CALIBRADOS PARA ROBLOX FORSAKEN
+# DETECCIÓN DE COLORES GENÉRICA (sin hardcodear rangos)
 # ============================================================
-COLOR_RANGES = {
-    'red_low':   ([0, 180, 120], [10, 255, 255]),
-    'red_high':  ([170, 180, 120], [180, 255, 255]),
-    'orange':    ([8, 100, 150], [20, 255, 255]),
-    'yellow':    ([21, 100, 150], [38, 255, 255]),
-    'green':     ([38, 80, 100], [85, 255, 255]),
-    'cyan':      ([85, 80, 120], [105, 255, 255]),
-    'blue':      ([105, 80, 100], [130, 255, 255]),
-    'purple':    ([130, 50, 80], [142, 255, 255]),
-    'hotpink':   ([143, 50, 80], [158, 255, 255]),
-    'magenta':   ([159, 50, 100], [175, 255, 255]), 
-    'beige':     ([0, 0, 170], [180, 100, 255]), 
-    'lightpink': ([160, 50, 180], [180, 180, 255]),
-    'mint':      ([40, 20, 200], [85, 100, 255]),
-}
+# Solo se usa para detección del grid (áreas coloridas genéricas)
+GENERIC_COLOR_MASK_LOW  = (0, 50, 50)    # Cualquier píxel con algo de saturación
+GENERIC_COLOR_MASK_HIGH = (180, 255, 255)
+
+def _hsv_distance(h1, s1, v1, h2, s2, v2):
+    """Distancia perceptual entre dos colores HSV (OpenCV: H=0-180)."""
+    dh = min(abs(int(h1) - int(h2)), 180 - abs(int(h1) - int(h2)))
+    ds = abs(int(s1) - int(s2))
+    dv = abs(int(v1) - int(v2))
+    # H tiene más peso porque es el diferenciador principal de color
+    return (dh * 2.0) ** 2 + ds ** 2 + (dv * 0.5) ** 2
 
 # ============================================================
 # ESTADOS DE LA MÁQUINA
@@ -941,11 +937,7 @@ class FlowPuzzleSolver:
                     print("   [GridDetect] ⚠️ No se detectó fondo oscuro")
             
             # ====== PASO 2: DETECTAR COLORES ======
-            combined_color_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-            
-            for _, (lower, upper) in COLOR_RANGES.items():
-                mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-                combined_color_mask = cv2.bitwise_or(combined_color_mask, mask)
+            combined_color_mask = cv2.inRange(hsv, np.array(GENERIC_COLOR_MASK_LOW), np.array(GENERIC_COLOR_MASK_HIGH))
             
             kernel = np.ones((3,3), np.uint8)
             combined_color_mask = cv2.morphologyEx(combined_color_mask, cv2.MORPH_OPEN, kernel)
@@ -1251,11 +1243,7 @@ class FlowPuzzleSolver:
         """
         try:
             hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
-            combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-            
-            for _, (lower, upper) in COLOR_RANGES.items():
-                mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-                combined_mask = cv2.bitwise_or(combined_mask, mask)
+            combined_mask = cv2.inRange(hsv, np.array(GENERIC_COLOR_MASK_LOW), np.array(GENERIC_COLOR_MASK_HIGH))
             
             kernel = np.ones((3,3), np.uint8)
             combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
@@ -1662,14 +1650,43 @@ class FlowPuzzleSolver:
         except:
             return None
 
-    def _classify_color(self, hue, sat, val):
-        if val < 40: return None
-        if sat < 20 and val > 200: return None
-        for color_name, (lower, upper) in COLOR_RANGES.items():
-            if (lower[0] <= hue <= upper[0]) and (lower[1] <= sat <= upper[1]) and (lower[2] <= val <= upper[2]):
-                base_name = color_name.split('_')[0]
-                if base_name == 'pink': return 'magenta'
-                return base_name
+    def _get_cell_dominant_hsv(self, roi):
+        """Obtiene el HSV dominante de una ROI de celda."""
+        sat_channel = roi[:, :, 1]
+        val_channel = roi[:, :, 2]
+        
+        # Píxel con mayor saturación (el del color del dot)
+        max_sat_idx = np.unravel_index(np.argmax(sat_channel), sat_channel.shape)
+        h = int(roi[max_sat_idx[0], max_sat_idx[1], 0])
+        s = int(roi[max_sat_idx[0], max_sat_idx[1], 1])
+        v = int(roi[max_sat_idx[0], max_sat_idx[1], 2])
+        
+        median_sat = float(np.median(sat_channel))
+        high_sat_pixels = int(np.sum(sat_channel > 80))
+        total_pixels = sat_channel.size
+        high_sat_ratio = high_sat_pixels / total_pixels if total_pixels > 0 else 0
+        
+        # Brightest pixel (for low-sat colors like beige/white)
+        max_val_idx = np.unravel_index(np.argmax(val_channel), val_channel.shape)
+        bh = int(roi[max_val_idx[0], max_val_idx[1], 0])
+        bs = int(roi[max_val_idx[0], max_val_idx[1], 1])
+        bv = int(roi[max_val_idx[0], max_val_idx[1], 2])
+        
+        return h, s, v, median_sat, high_sat_ratio, bh, bs, bv
+
+    def _is_cell_colored(self, h, s, v, median_sat, high_sat_ratio, bh, bs, bv):
+        """Determina si una celda tiene un dot de color (genérico, sin hardcodear)."""
+        # Caso 1: Color saturado (la mayoría de los dots)
+        if s > 80 and v > 80 and high_sat_ratio > 0.08:
+            return (h, s, v)
+        # Caso 2: Color claro/bajo (beige, blanco, pastel)
+        if bv > 160 and bs < 120 and high_sat_ratio < 0.15:
+            # Verificar que hay contraste con el fondo
+            if bv > 200:
+                return (bh, bs, bv)
+        # Caso 3: Saturación moderada pero consistente
+        if median_sat > 50 and s > 60 and v > 100:
+            return (h, s, v)
         return None
 
     def _save_debug_grid(self, grid_img: np.ndarray, endpoints: Dict[Tuple[int, int], int], 
@@ -1712,18 +1729,19 @@ class FlowPuzzleSolver:
             print(f"   ⚠️ Error guardando debug: {e}")
 
     def analyze_grid(self, grid_img: np.ndarray):
+        """
+        Detecta endpoints del puzzle auto-detectando colores por clustering HSV.
+        No necesita rangos hardcodeados — agrupa celdas con colores similares.
+        """
         h, w = grid_img.shape[:2]
         cell_h, cell_w = h / GRID_SIZE, w / GRID_SIZE
-        cell_size = int((cell_w + cell_h) / 2)
         hsv = cv2.cvtColor(grid_img, cv2.COLOR_BGR2HSV)
         
-        cell_colors = {}
-        if DEBUG_MODE:
-            print("   [DEBUG] Analizando celdas:")
+        # === PASO 1: Recopilar celdas con color ===
+        colored_cells = []  # [(row, col, h, s, v)]
         
         for row in range(GRID_SIZE):
             for col in range(GRID_SIZE):
-                # ROI central de la celda (90% central)
                 x1 = int(col * cell_w + cell_w * 0.05)
                 y1 = int(row * cell_h + cell_h * 0.05)
                 x2 = int((col + 1) * cell_w - cell_w * 0.05)
@@ -1732,55 +1750,84 @@ class FlowPuzzleSolver:
                 roi = hsv[y1:y2, x1:x2]
                 if roi.size == 0: continue
                 
-                sat_channel = roi[:, :, 1]
-                val_channel = roi[:, :, 2]
-                max_sat_idx = np.unravel_index(np.argmax(sat_channel), sat_channel.shape)
+                result = self._get_cell_dominant_hsv(roi)
+                h_val, s_val, v_val, med_sat, sat_ratio, bh, bs, bv = result
                 
-                max_hue = roi[max_sat_idx[0], max_sat_idx[1], 0]
-                max_sat = roi[max_sat_idx[0], max_sat_idx[1], 1]
-                max_val = roi[max_sat_idx[0], max_sat_idx[1], 2]
-                
-                median_sat = np.median(sat_channel)
-                high_sat_pixels = np.sum(sat_channel > 120)
-                total_pixels = sat_channel.size
-                high_sat_ratio = high_sat_pixels / total_pixels if total_pixels > 0 else 0
-                
-                # Beige check
-                high_val_pixels = np.sum(val_channel > 170)
-                high_val_ratio = high_val_pixels / total_pixels if total_pixels > 0 else 0
-                max_val_idx = np.unravel_index(np.argmax(val_channel), val_channel.shape)
-                brightest_hue = roi[max_val_idx[0], max_val_idx[1], 0]
-                brightest_sat = roi[max_val_idx[0], max_val_idx[1], 1]
-                brightest_val = roi[max_val_idx[0], max_val_idx[1], 2]
-                
-                sat_contrast = max_sat - median_sat
-                
-                is_colored = max_sat > 100 and max_val > 130 and high_sat_ratio > 0.10
-                has_contrast = sat_contrast > 20
-                is_filled = high_sat_ratio > 0.5
-                
-                color_name = None
-                
-                if is_colored and (has_contrast or is_filled):
-                    color_name = self._classify_color(max_hue, max_sat, max_val)
-                    if DEBUG_MODE and color_name:
-                         print(f"      ({row},{col}): {color_name} (H:{max_hue} S:{max_sat} V:{max_val})")
-                elif brightest_val > 200 and brightest_sat < 100 and high_val_ratio > 0.15:
-                    color_name = self._classify_color(brightest_hue, brightest_sat, brightest_val)
-                    if DEBUG_MODE and color_name:
-                         print(f"      ({row},{col}): {color_name} (Beige H:{brightest_hue} S:{brightest_sat} V:{brightest_val})")
-
-                if color_name:
-                    cell_colors[(row, col)] = color_name
-
-        unique_colors = list(set(cell_colors.values()))
-        color_to_id = {color: idx + 1 for idx, color in enumerate(unique_colors)}
-        endpoints = {pos: color_to_id[color] for pos, color in cell_colors.items()}
-        id_to_color_map = {idx: name for name, idx in color_to_id.items()}
+                color_hsv = self._is_cell_colored(h_val, s_val, v_val, med_sat, sat_ratio, bh, bs, bv)
+                if color_hsv:
+                    colored_cells.append((row, col, color_hsv[0], color_hsv[1], color_hsv[2]))
+                    if DEBUG_MODE:
+                        print(f"      ({row},{col}): H={color_hsv[0]} S={color_hsv[1]} V={color_hsv[2]}")
         
         if DEBUG_MODE:
-            print(f"   [DEBUG] Total puntos detectados: {len(cell_colors)}")
-            print(f"   [DEBUG] Colores únicos: {unique_colors}")
+            print(f"   [AutoDetect] Celdas con color: {len(colored_cells)}")
+        
+        if len(colored_cells) < 2:
+            if DEBUG_MODE:
+                print("   ⚠️ [AutoDetect] Muy pocas celdas con color")
+            return {}, {}
+        
+        # === PASO 2: Clustering por similitud HSV ===
+        # Umbral adaptativo: calcular distancias medias y usar un umbral relativo
+        CLUSTER_THRESHOLD = 1800  # Distancia HSV al cuadrado (ajustable)
+        
+        # Asignar clusters greedy: cada celda se une al cluster más cercano o crea uno nuevo
+        clusters = []  # Cada cluster: lista de (row, col, h, s, v)
+        
+        for cell in colored_cells:
+            row, col, ch, cs, cv = cell
+            best_cluster = -1
+            best_dist = float('inf')
+            
+            for i, cluster in enumerate(clusters):
+                # Distancia al promedio del cluster
+                avg_h = np.mean([c[2] for c in cluster])
+                avg_s = np.mean([c[3] for c in cluster])
+                avg_v = np.mean([c[4] for c in cluster])
+                dist = _hsv_distance(ch, cs, cv, avg_h, avg_s, avg_v)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_cluster = i
+            
+            if best_cluster >= 0 and best_dist < CLUSTER_THRESHOLD:
+                clusters[best_cluster].append(cell)
+            else:
+                clusters.append([cell])
+        
+        if DEBUG_MODE:
+            print(f"   [AutoDetect] Clusters encontrados: {len(clusters)}")
+            for i, cluster in enumerate(clusters):
+                avg_h = int(np.mean([c[2] for c in cluster]))
+                avg_s = int(np.mean([c[3] for c in cluster]))
+                avg_v = int(np.mean([c[4] for c in cluster]))
+                positions = [(c[0], c[1]) for c in cluster]
+                print(f"      Cluster {i+1}: H={avg_h} S={avg_s} V={avg_v} → {positions}")
+        
+        # === PASO 3: Construir endpoints ===
+        # Cada cluster = un color. Si tiene exactamente 2 celdas = endpoints perfectos.
+        # Si tiene más, podría ser ruido — intentar sub-clusters.
+        endpoints = {}
+        id_to_color_map = {}
+        color_id = 0
+        
+        for cluster in clusters:
+            if len(cluster) < 2:
+                if DEBUG_MODE:
+                    print(f"      ⚠️ Cluster con 1 sola celda ignorado: ({cluster[0][0]},{cluster[0][1]})")
+                continue
+            
+            color_id += 1
+            avg_h = int(np.mean([c[2] for c in cluster]))
+            avg_s = int(np.mean([c[3] for c in cluster]))
+            avg_v = int(np.mean([c[4] for c in cluster]))
+            
+            for (row, col, _, _, _) in cluster:
+                endpoints[(row, col)] = color_id
+            
+            id_to_color_map[color_id] = f"C{color_id}(H{avg_h}S{avg_s}V{avg_v})"
+        
+        if DEBUG_MODE:
+            print(f"   [AutoDetect] Total endpoints: {len(endpoints)}, Colores: {color_id}")
             self._save_debug_grid(grid_img, endpoints, "debug_analyzed", id_to_color_map)
             
         return endpoints, id_to_color_map
