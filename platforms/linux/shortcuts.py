@@ -42,9 +42,13 @@ class LinuxHotkeys:
             print(f"   ⌨️  Registered hotkey listener for: {key_name}")
 
     def register_combo(self, combo: str, callback: Callable):
-        """Register a modifier+key combo (alt+j, ctrl+shift+s, etc.)"""
+        """
+        Register a modifier+key combo callback.
+        combo format: 'alt+j', 'ctrl+shift+s', etc.
+        """
         parts = [p.strip().lower() for p in combo.split('+')]
         if len(parts) < 2:
+            print(f"   ⚠️  Invalid combo format: {combo}")
             return
 
         key_name = parts[-1]
@@ -53,16 +57,21 @@ class LinuxHotkeys:
             print(f"   ⚠️  Unknown key in combo: {key_name}")
             return
 
-        mod_codes = set()
+        # Each mod group is a set of equivalent keys (e.g. LEFTALT or RIGHTALT)
+        # User must hold at least one from each group
+        mod_groups = []
         for m in parts[:-1]:
             if m == 'alt':
-                mod_codes.update({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT})
+                mod_groups.append({ecodes.KEY_LEFTALT, ecodes.KEY_RIGHTALT})
             elif m == 'ctrl':
-                mod_codes.update({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL})
+                mod_groups.append({ecodes.KEY_LEFTCTRL, ecodes.KEY_RIGHTCTRL})
             elif m == 'shift':
-                mod_codes.update({ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT})
+                mod_groups.append({ecodes.KEY_LEFTSHIFT, ecodes.KEY_RIGHTSHIFT})
+            else:
+                print(f"   ⚠️  Unknown modifier: {m}")
+                return
 
-        self.combo_callbacks[(frozenset(mod_codes), key_code)] = callback
+        self.combo_callbacks[(tuple(mod_groups), key_code)] = callback
         print(f"   ⌨️  Registered combo listener for: {combo}")
 
     def register_movement_interrupt(self, callback: Callable):
@@ -143,10 +152,12 @@ class LinuxHotkeys:
 
                         # Check combo callbacks (Alt+J, etc.)
                         active_mods = frozenset(self.pressed_modifiers)
-                        for (mod_set, key_code), callback in self.combo_callbacks.items():
-                            if event.code == key_code and active_mods == mod_set:
-                                callback()
-                                break
+                        for (mod_groups, key_code), callback in self.combo_callbacks.items():
+                            if event.code == key_code:
+                                # Check at least one key from each mod group is held
+                                if all(group & active_mods for group in mod_groups):
+                                    callback()
+                                    break
 
                 except OSError:
                     del fds[fd]
