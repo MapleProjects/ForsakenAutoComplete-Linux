@@ -2210,6 +2210,21 @@ def main():
     try:
         root = tk.Tk()
         root.title("ForsakenAC")
+        # Set WM class for Hyprland rules
+        try:
+            root.tk.call('wm', 'class', root._w, 'forsaken-ac')
+        except Exception:
+            pass
+
+        # Make window float on Hyprland
+        try:
+            import subprocess
+            subprocess.run(
+                ["hyprctl", "keyword", "windowrulev2", "float,class:^(forsaken-ac)$"],
+                capture_output=True, timeout=2
+            )
+        except Exception:
+            pass
         
         # Icono (Linux)
         try:
