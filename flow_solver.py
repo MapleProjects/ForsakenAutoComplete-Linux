@@ -2011,6 +2011,10 @@ class FlowPuzzleSolver:
         cell_w = grid_rect_size[0] / GRID_SIZE
         cell_h = grid_rect_size[1] / GRID_SIZE
         
+        if DEBUG_MODE:
+            print(f"   [EXEC] Grid origin: ({grid_origin[0]}, {grid_origin[1]}), size: ({grid_rect_size[0]}, {grid_rect_size[1]})")
+            print(f"   [EXEC] Cell size: {cell_w:.1f} x {cell_h:.1f}")
+        
         for color_id, path in solutions.items():
             if emergency_stop_flag: return
             
@@ -2023,6 +2027,9 @@ class FlowPuzzleSolver:
                 
             if not screen_points: continue
             
+            if DEBUG_MODE and color_id <= 2:
+                print(f"   [EXEC] Color {color_id}: primer punto → ({int(screen_points[0][0])}, {int(screen_points[0][1])}), último → ({int(screen_points[-1][0])}, {int(screen_points[-1][1])})")
+                
             # --- APPLY BIAS (Start Back, End Forward) ---
             if len(screen_points) >= 2:
                 # Adjust Start (Backward)
