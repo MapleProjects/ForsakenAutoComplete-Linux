@@ -1676,16 +1676,18 @@ class FlowPuzzleSolver:
 
     def _is_cell_colored(self, h, s, v, median_sat, high_sat_ratio, bh, bs, bv):
         """Determina si una celda tiene un dot de color (genérico, sin hardcodear)."""
-        # Caso 1: Color saturado (la mayoría de los dots)
-        if s > 80 and v > 80 and high_sat_ratio > 0.08:
+        # Caso 1: Color saturado (la mayoría de los dots) — incluye dots oscuros
+        if s > 60 and v > 35 and high_sat_ratio > 0.02:
             return (h, s, v)
         # Caso 2: Color claro/bajo (beige, blanco, pastel)
-        if bv > 160 and bs < 120 and high_sat_ratio < 0.15:
-            # Verificar que hay contraste con el fondo
-            if bv > 200:
+        if bv > 140 and bs < 140 and high_sat_ratio < 0.20:
+            if bv > 180:
                 return (bh, bs, bv)
-        # Caso 3: Saturación moderada pero consistente
-        if median_sat > 50 and s > 60 and v > 100:
+        # Caso 3: Saturación moderada pero consistente — relajado
+        if median_sat > 30 and s > 40 and v > 60:
+            return (h, s, v)
+        # Caso 4: Dot pequeño pero visible — cualquier píxel saturado
+        if s > 100 and v > 80:
             return (h, s, v)
         return None
 
@@ -1758,6 +1760,9 @@ class FlowPuzzleSolver:
                     colored_cells.append((row, col, color_hsv[0], color_hsv[1], color_hsv[2]))
                     if DEBUG_MODE:
                         print(f"      ({row},{col}): H={color_hsv[0]} S={color_hsv[1]} V={color_hsv[2]}")
+                elif DEBUG_MODE and s_val > 30:
+                    # Show rejected cells too — helps debug missing colors
+                    print(f"      ({row},{col}): H={h_val} S={s_val} V={v_val} [REJECTED med_sat={med_sat:.0f} ratio={sat_ratio:.3f}]")
         
         if DEBUG_MODE:
             print(f"   [AutoDetect] Celdas con color: {len(colored_cells)}")
@@ -1769,7 +1774,12 @@ class FlowPuzzleSolver:
         
         # === PASO 2: Clustering por similitud HSV ===
         # Umbral adaptativo: calcular distancias medias y usar un umbral relativo
-        CLUSTER_THRESHOLD = 1800  # Distancia HSV al cuadrado (ajustable)
+        CLUSTER_THRESHOLD = 600  # Distancia HSV al cuadrado (bajado para separar rojo/naranja)
+        
+        # Filtrar celdas achromáticas (S<30) — no son dots de puzzle, son UI/ruido
+        colored_cells = [c for c in colored_cells if c[3] > 30]
+        if DEBUG_MODE:
+            print(f"   [AutoDetect] Después de filtrar achromáticos: {len(colored_cells)} celdas")
         
         # Asignar clusters greedy: cada celda se une al cluster más cercano o crea uno nuevo
         clusters = []  # Cada cluster: lista de (row, col, h, s, v)
@@ -2015,6 +2025,16 @@ class FlowPuzzleSolver:
             print(f"   [EXEC] Grid origin: ({grid_origin[0]}, {grid_origin[1]}), size: ({grid_rect_size[0]}, {grid_rect_size[1]})")
             print(f"   [EXEC] Cell size: {cell_w:.1f} x {cell_h:.1f}")
         
+        # HOME: use ydotool absolute move to position cursor at grid center
+        # This syncs the real cursor position with internal tracking
+        grid_cx = grid_origin[0] + grid_rect_size[0] // 2
+        grid_cy = grid_origin[1] + grid_rect_size[1] // 2
+        if hasattr(self.input, 'absolute_move'):
+            self.input.absolute_move(grid_cx, grid_cy)
+        else:
+            self.input.move_mouse(grid_cx, grid_cy)
+        time.sleep(0.05)  # Brief pause for cursor to settle
+        
         for color_id, path in solutions.items():
             if emergency_stop_flag: return
             
@@ -2059,9 +2079,12 @@ class FlowPuzzleSolver:
             # Integer conversion just before drawing
             points_int = [(int(x), int(y)) for x, y in screen_points]
             
-            # Move to Start
+            # Use absolute move to start of each color — prevents accumulated EV_REL drift
             start_p = points_int[0]
-            self.input.move_mouse(start_p[0], start_p[1])
+            if hasattr(self.input, 'absolute_move'):
+                self.input.absolute_move(start_p[0], start_p[1])
+            else:
+                self.input.move_mouse(start_p[0], start_p[1])
             time.sleep(DELAY_BEFORE_MOUSEDOWN)
             
             if emergency_stop_flag: return
@@ -2162,6 +2185,8 @@ class FlowPuzzleSolver:
             if emergency_stop_flag: return
             
             print(f"✅ [EXECUTE] Dibujando...")
+            # NO sync cursor position here — hyprctl returns system cursor pos,
+            # but Roblox warps cursor after each draw. Internal tracking is more reliable.
             self.draw_solution(solutions, (grid_rect[0], grid_rect[1]), (grid_rect[2], grid_rect[3]))
             print("✅ [DONE] Finalizado.")
             

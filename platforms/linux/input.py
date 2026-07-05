@@ -8,18 +8,17 @@ except ImportError:
 import os
 import subprocess
 import time
+import json
 from typing import Dict
 from core.input_interface import InputInterface
 
 class LinuxInput(InputInterface):
     """
     Input via evdev uinput — keyboard AND mouse.
-    Mouse uses EV_ABS with INPUT_PROP_POINTER for Wayland compatibility.
+    Mouse uses EV_REL (relative movement) for Wayland/Hyprland compatibility.
     Button events use EV_KEY (BTN_LEFT/BTN_RIGHT).
     """
     
-    ABS_MAX = 32768
-
     def __init__(self):
         if not evdev:
             raise ImportError("evdev is required. Install: pip install evdev")
@@ -36,18 +35,18 @@ class LinuxInput(InputInterface):
                 ecodes.KEY_F4,
                 ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE,
             ],
-            ecodes.EV_ABS: [
-                (ecodes.ABS_X, evdev.AbsInfo(value=0, min=0, max=self.ABS_MAX, fuzz=0, flat=0, resolution=0)),
-                (ecodes.ABS_Y, evdev.AbsInfo(value=0, min=0, max=self.ABS_MAX, fuzz=0, flat=0, resolution=0)),
+            ecodes.EV_REL: [
+                ecodes.REL_X,
+                ecodes.REL_Y,
+                ecodes.REL_WHEEL,
             ],
         }
-        
+
         try:
             self.ui = evdev.UInput(
                 cap, 
                 name='Forsaken-Auto-Input', 
                 version=0x1,
-                # Tell libinput this is a pointer, not a touchscreen
                 input_props=[ecodes.INPUT_PROP_POINTER],
             )
         except PermissionError:
@@ -60,14 +59,53 @@ class LinuxInput(InputInterface):
         self.screen_width = 1920
         self.screen_height = 1080
         
-        # Cache for ydotool fallback (button events only if needed)
-        self._ydotool_socket = None
+        # Internal cursor position tracking (absolute pixels on screen)
+        # Start at center of screen
+        self._cursor_x = self.screen_width // 2
+        self._cursor_y = self.screen_height // 2
         
-        print(f"   🖱️  Mouse: uinput EV_ABS (pointer mode, max={self.ABS_MAX})")
+        print(f"   🖱️  Mouse: uinput EV_REL + ydotool absolute (pointer mode)")
+
+    def absolute_move(self, x: int, y: int):
+        """Move cursor to absolute position using ydotool (reliable on Wayland)."""
+        try:
+            subprocess.run(
+                ["ydotool", "mousemove", "--absolute", "-x", str(int(x)), "-y", str(int(y))],
+                capture_output=True, timeout=2
+            )
+            self._cursor_x = int(x)
+            self._cursor_y = int(y)
+        except Exception as e:
+            print(f"   ⚠️ ydotool absolute move failed: {e}, falling back to EV_REL")
+            self.move_mouse(x, y)
 
     def set_screen_resolution(self, width: int, height: int):
         self.screen_width = width
         self.screen_height = height
+        # Try to sync actual cursor position on resolution change
+        self.sync_cursor_position()
+
+    def sync_cursor_position(self):
+        """Query actual cursor position from Hyprland and sync internal tracking."""
+        try:
+            result = subprocess.run(
+                ["hyprctl", "cursorpos"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0:
+                # Output format: "1234, 567" or "1234,567"
+                parts = result.stdout.strip().replace(" ", "").split(",")
+                if len(parts) == 2:
+                    self._cursor_x = int(parts[0])
+                    self._cursor_y = int(parts[1])
+                    print(f"   🖱️  Cursor synced to ({self._cursor_x}, {self._cursor_y})")
+                    return
+        except Exception:
+            pass
+        # Fallback: assume center of screen
+        self._cursor_x = self.screen_width // 2
+        self._cursor_y = self.screen_height // 2
+        print(f"   🖱️  Cursor position unknown, assuming center ({self._cursor_x}, {self._cursor_y})")
 
     def _build_key_map(self) -> Dict[str, int]:
         m = {
@@ -109,13 +147,25 @@ class LinuxInput(InputInterface):
             self.ui.syn()
 
     def move_mouse(self, x: int, y: int):
-        abs_x = int((x / self.screen_width) * self.ABS_MAX)
-        abs_y = int((y / self.screen_height) * self.ABS_MAX)
-        abs_x = max(0, min(self.ABS_MAX, abs_x))
-        abs_y = max(0, min(self.ABS_MAX, abs_y))
-        self.ui.write(ecodes.EV_ABS, ecodes.ABS_X, abs_x)
-        self.ui.write(ecodes.EV_ABS, ecodes.ABS_Y, abs_y)
+        """Move mouse to absolute screen coordinates using relative deltas."""
+        # Calculate delta from current tracked position
+        delta_x = int(x) - int(self._cursor_x)
+        delta_y = int(y) - int(self._cursor_y)
+        
+        # Clamp deltas to int16 range (evdev uses int16 for REL)
+        delta_x = max(-32768, min(32767, delta_x))
+        delta_y = max(-32768, min(32767, delta_y))
+        
+        # Send relative movement
+        if delta_x != 0:
+            self.ui.write(ecodes.EV_REL, ecodes.REL_X, delta_x)
+        if delta_y != 0:
+            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, delta_y)
         self.ui.syn()
+        
+        # Update internal position tracking
+        self._cursor_x = int(x)
+        self._cursor_y = int(y)
 
     def mouse_down(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
