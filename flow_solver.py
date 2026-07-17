@@ -2065,16 +2065,16 @@ class FlowPuzzleSolver:
         scale_x = 1.0
         scale_y = 1.0
         calibrated = False
-        actual_x, actual_y = self._get_cursor_pos()
-        if actual_x is not None and grid_cx != 0 and grid_cy != 0:
+        # Reuse LinuxInput's sync_cursor_position (already proven to work)
+        if hasattr(self.input, 'sync_cursor_position'):
+            self.input.sync_cursor_position()
+        actual_x = getattr(self.input, '_cursor_x', None)
+        actual_y = getattr(self.input, '_cursor_y', None)
+        if actual_x is not None and actual_y is not None and grid_cx != 0 and grid_cy != 0:
             scale_x = actual_x / grid_cx
             scale_y = actual_y / grid_cy
             calibrated = True
             print(f"   [CAL] Scale factor: ({scale_x:.4f}, {scale_y:.4f}) — grim ({grid_cx},{grid_cy}) → actual ({actual_x},{actual_y})")
-            # Update internal tracking to match actual position
-            if hasattr(self.input, '_cursor_x'):
-                self.input._cursor_x = actual_x
-                self.input._cursor_y = actual_y
         else:
             print("   [CAL] No scale detection (no hyprctl), using grim coords directly")
         
