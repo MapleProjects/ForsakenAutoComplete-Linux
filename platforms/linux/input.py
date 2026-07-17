@@ -88,22 +88,19 @@ class LinuxInput(InputInterface):
     def absolute_move(self, x: int, y: int):
         """Move cursor to absolute position.
 
-        Uses hyprctl cursorpos + EV_REL delta (never ydotool --absolute,
-        which produces wrong coordinates on some Wayland setups).
+        Uses internal tracking only — no hyprctl sync during drawing.
+        hyprctl cursorpos returns the PHYSICAL mouse cursor position,
+        not the virtual uinput device cursor. Mixing them causes drift.
         """
         target_x, target_y = int(x), int(y)
-
-        # Sync actual cursor position from Hyprland
-        self.sync_cursor_position()
-
-        # Calculate EV_REL delta from actual position to target
         self.move_mouse(target_x, target_y)
 
     def set_screen_resolution(self, width: int, height: int):
         self.screen_width = width
         self.screen_height = height
-        # Try to sync actual cursor position on resolution change
-        self.sync_cursor_position()
+        # NOTE: Do NOT call sync_cursor_position here.
+        # hyprctl returns the physical mouse position, not the uinput virtual cursor.
+        # The virtual cursor starts at screen center (set in __init__).
 
     def sync_cursor_position(self):
         """Query actual cursor position from Hyprland and sync internal tracking."""

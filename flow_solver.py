@@ -2061,16 +2061,8 @@ class FlowPuzzleSolver:
             self.input.move_mouse(grid_cx, grid_cy)
         time.sleep(0.15)  # Pause for cursor to settle
         
-        # Measure actual cursor position to verify hyprctl works
-        actual_x, actual_y = None, None
-        if hasattr(self.input, 'sync_cursor_position'):
-            self.input.sync_cursor_position()
-        actual_x = getattr(self.input, '_cursor_x', None)
-        actual_y = getattr(self.input, '_cursor_y', None)
-        if actual_x is not None:
-            print(f"   [CAL] Cursor at ({actual_x}, {actual_y}) — using hyprctl+EV_REL (no ydotool)")
-        else:
-            print("   [CAL] WARNING: hyprctl cursorpos failed, EV_REL may drift")
+        # Initial cursor position: use internal tracking (set at startup)
+        print(f"   [CAL] Cursor tracking: ({self.input._cursor_x}, {self.input._cursor_y})")
         
         for color_id, path in solutions.items():
             if emergency_stop_flag: return
