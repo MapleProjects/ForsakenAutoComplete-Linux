@@ -2061,22 +2061,16 @@ class FlowPuzzleSolver:
             self.input.move_mouse(grid_cx, grid_cy)
         time.sleep(0.15)  # Pause for cursor to settle
         
-        # Measure actual cursor position to compute scale factor
-        scale_x = 1.0
-        scale_y = 1.0
-        calibrated = False
-        # Reuse LinuxInput's sync_cursor_position (already proven to work)
+        # Measure actual cursor position to verify hyprctl works
+        actual_x, actual_y = None, None
         if hasattr(self.input, 'sync_cursor_position'):
             self.input.sync_cursor_position()
         actual_x = getattr(self.input, '_cursor_x', None)
         actual_y = getattr(self.input, '_cursor_y', None)
-        if actual_x is not None and actual_y is not None and grid_cx != 0 and grid_cy != 0:
-            scale_x = actual_x / grid_cx
-            scale_y = actual_y / grid_cy
-            calibrated = True
-            print(f"   [CAL] Scale factor: ({scale_x:.4f}, {scale_y:.4f}) — grim ({grid_cx},{grid_cy}) → actual ({actual_x},{actual_y})")
+        if actual_x is not None:
+            print(f"   [CAL] Cursor at ({actual_x}, {actual_y}) — using hyprctl+EV_REL (no ydotool)")
         else:
-            print("   [CAL] No scale detection (no hyprctl), using grim coords directly")
+            print("   [CAL] WARNING: hyprctl cursorpos failed, EV_REL may drift")
         
         for color_id, path in solutions.items():
             if emergency_stop_flag: return
@@ -2089,10 +2083,6 @@ class FlowPuzzleSolver:
                 screen_points.append((fx, fy))
                 
             if not screen_points: continue
-            
-            # Apply scale factor to all coordinates (grim → ydotool space)
-            if calibrated:
-                screen_points = [(x * scale_x, y * scale_y) for x, y in screen_points]
             
             if DEBUG_MODE and color_id <= 2:
                 print(f"   [EXEC] Color {color_id}: primer punto → ({int(screen_points[0][0])}, {int(screen_points[0][1])}), último → ({int(screen_points[-1][0])}, {int(screen_points[-1][1])})")
@@ -2143,7 +2133,7 @@ class FlowPuzzleSolver:
             # Wobble (usar promedio de cell_w y cell_h para el cálculo del radio)
             avg_cell_size = (cell_w + cell_h) / 2
             # Wobble center must also be in ydotool coords (already scaled in points_int)
-            self._perform_spiral_wobble(target_x, target_y, cell_size=avg_cell_size * scale_x)
+            self._perform_spiral_wobble(target_x, target_y, cell_size=avg_cell_size)
             
             # Draw Path
             for i in range(1, len(points_int)):

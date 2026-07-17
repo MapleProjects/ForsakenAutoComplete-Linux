@@ -75,43 +75,28 @@ class LinuxInput(InputInterface):
                 capture_output=True, timeout=2
             )
             if result.returncode != 0:
-                # ydotoold not running — start it
                 subprocess.Popen(
                     ["ydotoold"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True
                 )
-                time.sleep(0.3)  # Give daemon time to start
+                time.sleep(0.3)
         except Exception:
             pass
 
     def absolute_move(self, x: int, y: int):
-        """Move cursor to absolute position using ydotool (reliable on Wayland)."""
+        """Move cursor to absolute position.
+
+        Uses hyprctl cursorpos + EV_REL delta (never ydotool --absolute,
+        which produces wrong coordinates on some Wayland setups).
+        """
         target_x, target_y = int(x), int(y)
 
-        # Ensure ydotoold daemon is running (required for ydotool absolute)
-        self._ensure_ydotoold()
-
-        try:
-            result = subprocess.run(
-                ["ydotool", "mousemove", "--absolute", "-x", str(target_x), "-y", str(target_y)],
-                capture_output=True, timeout=2
-            )
-            if result.returncode == 0:
-                self._cursor_x = target_x
-                self._cursor_y = target_y
-                return
-            else:
-                stderr = result.stderr.decode().strip() if result.stderr else ""
-                if stderr:
-                    print(f"   ⚠️ ydotool failed (rc={result.returncode}): {stderr}")
-        except Exception as e:
-            print(f"   ⚠️ ydotool exception: {e}")
-
-        # Fallback: sync actual position, then use EV_REL delta
+        # Sync actual cursor position from Hyprland
         self.sync_cursor_position()
-        print(f"   🖱️  Fallback EV_REL: ({self._cursor_x},{self._cursor_y}) → ({target_x},{target_y})")
+
+        # Calculate EV_REL delta from actual position to target
         self.move_mouse(target_x, target_y)
 
     def set_screen_resolution(self, width: int, height: int):
