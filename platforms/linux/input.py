@@ -65,6 +65,63 @@ class LinuxInput(InputInterface):
         self._cursor_y = self.screen_height // 2
         
         print(f"   🖱️  Mouse: uinput EV_REL + ydotool absolute (pointer mode)")
+        
+        # Detect EV_REL to screen pixel scale factor
+        self._detect_evrel_scale()
+
+    def _detect_evrel_scale(self):
+        """Detect EV_REL to screen pixel scale factor by measuring actual cursor movement."""
+        self._evrel_scale_x = 1.0
+        self._evrel_scale_y = 1.0
+        
+        def get_cursor_pos():
+            try:
+                result = subprocess.run(["hyprctl", "cursorpos"], capture_output=True, text=True, timeout=2)
+                if result.returncode == 0:
+                    parts = result.stdout.strip().replace(" ", "").split(",")
+                    if len(parts) == 2:
+                        return int(parts[0]), int(parts[1])
+            except:
+                pass
+            return None, None
+        
+        # Calibrate X
+        start = get_cursor_pos()
+        if start:
+            self.ui.write(ecodes.EV_REL, ecodes.REL_X, 300)
+            self.ui.syn()
+            time.sleep(0.1)
+            end = get_cursor_pos()
+            if end:
+                actual = end[0] - start[0]
+                if actual != 0:
+                    self._evrel_scale_x = 300.0 / actual
+                # Move back
+                self.ui.write(ecodes.EV_REL, ecodes.REL_X, -300)
+                self.ui.syn()
+                time.sleep(0.1)
+        
+        # Calibrate Y
+        start = get_cursor_pos()
+        if start:
+            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, 300)
+            self.ui.syn()
+            time.sleep(0.1)
+            end = get_cursor_pos()
+            if end:
+                actual = end[1] - start[1]
+                if actual != 0:
+                    self._evrel_scale_y = 300.0 / actual
+                # Move back
+                self.ui.write(ecodes.EV_REL, ecodes.REL_Y, -300)
+                self.ui.syn()
+                time.sleep(0.1)
+        
+        # Clamp
+        self._evrel_scale_x = max(0.1, min(5.0, self._evrel_scale_x))
+        self._evrel_scale_y = max(0.1, min(5.0, self._evrel_scale_y))
+        
+        print(f"   📏 EV_REL scale: X={self._evrel_scale_x:.4f}, Y={self._evrel_scale_y:.4f}")
 
     @staticmethod
     def _ensure_ydotoold():
@@ -168,6 +225,10 @@ class LinuxInput(InputInterface):
         # Calculate delta from current tracked position
         delta_x = int(x) - int(self._cursor_x)
         delta_y = int(y) - int(self._cursor_y)
+        
+        # Apply EV_REL scale factor (compositor may scale input events)
+        delta_x = int(delta_x / self._evrel_scale_x)
+        delta_y = int(delta_y / self._evrel_scale_y)
         
         # Clamp deltas to int16 range (evdev uses int16 for REL)
         delta_x = max(-32768, min(32767, delta_x))
