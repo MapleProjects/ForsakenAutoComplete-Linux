@@ -2045,34 +2045,38 @@ class FlowPuzzleSolver:
             print(f"   [EXEC] Grid origin: ({grid_origin[0]}, {grid_origin[1]}), size: ({grid_rect_size[0]}, {grid_rect_size[1]})")
             print(f"   [EXEC] Cell size: {cell_w:.1f} x {cell_h:.1f}")
         
-        # HOME: use ydotool absolute move to position cursor at grid center
-        # This syncs the real cursor position with internal tracking
+        # === SCALE DETECTION: grim resolution vs ydotool coordinate space ===
+        # grim captures at physical pixel resolution (Wayland output).
+        # ydotool absolute uses the compositor's logical coordinate space.
+        # If display scaling or mirrored outputs differ, we need a scale factor.
+        grim_w = grid_origin[0] + grid_rect_size[0]  # right edge in grim coords
+        grim_h = grid_origin[1] + grid_rect_size[1]  # bottom edge in grim coords
+        
+        # Move cursor to grid center using grim coords
         grid_cx = grid_origin[0] + grid_rect_size[0] // 2
         grid_cy = grid_origin[1] + grid_rect_size[1] // 2
         if hasattr(self.input, 'absolute_move'):
             self.input.absolute_move(grid_cx, grid_cy)
         else:
             self.input.move_mouse(grid_cx, grid_cy)
-        time.sleep(0.1)  # Pause for cursor to settle
+        time.sleep(0.15)  # Pause for cursor to settle
         
-        # === CALIBRATION: measure grim↔ydotool offset ===
-        # grim coordinates may not match ydotool absolute coordinates
-        # on mirrored displays or with scaling. Measure the actual offset
-        # and compensate for all subsequent absolute moves.
-        cal_offset_x = 0
-        cal_offset_y = 0
+        # Measure actual cursor position to compute scale factor
+        scale_x = 1.0
+        scale_y = 1.0
+        calibrated = False
         actual_x, actual_y = self._get_cursor_pos()
-        if actual_x is not None:
-            cal_offset_x = actual_x - grid_cx
-            cal_offset_y = actual_y - grid_cy
-            if DEBUG_MODE:
-                print(f"   [CAL] grim↔ydotool offset: ({cal_offset_x}, {cal_offset_y})")
+        if actual_x is not None and grid_cx != 0 and grid_cy != 0:
+            scale_x = actual_x / grid_cx
+            scale_y = actual_y / grid_cy
+            calibrated = True
+            print(f"   [CAL] Scale factor: ({scale_x:.4f}, {scale_y:.4f}) — grim ({grid_cx},{grid_cy}) → actual ({actual_x},{actual_y})")
             # Update internal tracking to match actual position
             if hasattr(self.input, '_cursor_x'):
                 self.input._cursor_x = actual_x
                 self.input._cursor_y = actual_y
-        elif DEBUG_MODE:
-            print("   [CAL] No se pudo obtener posición del cursor (sin calibración)")
+        else:
+            print("   [CAL] No scale detection (no hyprctl), using grim coords directly")
         
         for color_id, path in solutions.items():
             if emergency_stop_flag: return
@@ -2085,6 +2089,10 @@ class FlowPuzzleSolver:
                 screen_points.append((fx, fy))
                 
             if not screen_points: continue
+            
+            # Apply scale factor to all coordinates (grim → ydotool space)
+            if calibrated:
+                screen_points = [(x * scale_x, y * scale_y) for x, y in screen_points]
             
             if DEBUG_MODE and color_id <= 2:
                 print(f"   [EXEC] Color {color_id}: primer punto → ({int(screen_points[0][0])}, {int(screen_points[0][1])}), último → ({int(screen_points[-1][0])}, {int(screen_points[-1][1])})")
@@ -2119,10 +2127,10 @@ class FlowPuzzleSolver:
             points_int = [(int(x), int(y)) for x, y in screen_points]
             
             # Use absolute move to start of each color — prevents accumulated EV_REL drift
+            # start_p is already in ydotool coords (scale applied to screen_points above)
             start_p = points_int[0]
-            # Apply calibration offset to compensate for grim↔ydotool mismatch
-            target_x = start_p[0] - cal_offset_x
-            target_y = start_p[1] - cal_offset_y
+            target_x = start_p[0]
+            target_y = start_p[1]
             if hasattr(self.input, 'absolute_move'):
                 self.input.absolute_move(target_x, target_y)
             else:
@@ -2134,7 +2142,8 @@ class FlowPuzzleSolver:
             
             # Wobble (usar promedio de cell_w y cell_h para el cálculo del radio)
             avg_cell_size = (cell_w + cell_h) / 2
-            self._perform_spiral_wobble(start_p[0], start_p[1], cell_size=avg_cell_size)
+            # Wobble center must also be in ydotool coords (already scaled in points_int)
+            self._perform_spiral_wobble(target_x, target_y, cell_size=avg_cell_size * scale_x)
             
             # Draw Path
             for i in range(1, len(points_int)):
