@@ -52,7 +52,6 @@ class LinuxInput(InputInterface):
         except PermissionError:
             raise PermissionError("Could not create uinput device. Permission denied.")
         except TypeError:
-            # Older evdev may not support input_props
             self.ui = evdev.UInput(cap, name='Forsaken-Auto-Input', version=0x1)
 
         self._key_map = self._build_key_map()
@@ -60,73 +59,73 @@ class LinuxInput(InputInterface):
         self.screen_height = 1080
         
         # Internal cursor position tracking (absolute pixels on screen)
-        # Start at center of screen
         self._cursor_x = self.screen_width // 2
         self._cursor_y = self.screen_height // 2
         
+        # grim-to-compositor scale factor (detected at startup)
+        self._grim_scale_x = 1.0
+        self._grim_scale_y = 1.0
+        
         print(f"   🖱️  Mouse: uinput EV_REL + ydotool absolute (pointer mode)")
         
-        # Detect EV_REL to screen pixel scale factor
-        self._detect_evrel_scale()
+        # Detect the scale between grim coordinates and compositor coordinates
+        self._detect_grim_scale()
 
-    def _detect_evrel_scale(self):
-        """Detect EV_REL units per pixel ratio by measuring actual cursor movement.
+    def _get_cursor_pos_hyprctl(self):
+        """Get cursor position from Hyprland compositor."""
+        try:
+            result = subprocess.run(
+                ["hyprctl", "cursorpos"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0:
+                parts = result.stdout.strip().replace(" ", "").split(",")
+                if len(parts) == 2:
+                    return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+        return None, None
+
+    def _detect_grim_scale(self):
+        """Detect scale between grim coords and compositor coords.
         
-        Sends a known EV_REL delta, measures how many pixels the cursor
-        actually moved via hyprctl, then computes the ratio needed to
-        convert pixel deltas to EV_REL units.
+        On some setups (mirrored displays, scaling), grim captures at
+        a different resolution than the compositor's coordinate space.
+        This method detects the ratio empirically.
         """
-        self._evrel_ratio_x = 1.0  # EV_REL units per pixel (X)
-        self._evrel_ratio_y = 1.0  # EV_REL units per pixel (Y)
+        self._ensure_ydotoold()
         
-        def get_cursor_pos():
-            try:
-                result = subprocess.run(["hyprctl", "cursorpos"], capture_output=True, text=True, timeout=2)
-                if result.returncode == 0:
-                    parts = result.stdout.strip().replace(" ", "").split(",")
-                    if len(parts) == 2:
-                        return int(parts[0]), int(parts[1])
-            except:
-                pass
-            return None, None
+        # Move cursor to a known position using ydotool --absolute
+        test_x, test_y = 200, 200
+        try:
+            subprocess.run(
+                ["ydotool", "mousemove", "--absolute", "-x", str(test_x), "-y", str(test_y)],
+                capture_output=True, timeout=2
+            )
+            time.sleep(0.15)
+            
+            # Measure actual position
+            actual = self._get_cursor_pos_hyprctl()
+            if actual and actual[0] > 0 and actual[1] > 0:
+                self._grim_scale_x = actual[0] / test_x
+                self._grim_scale_y = actual[1] / test_y
+                
+                # Sanity check: scale should be between 0.5 and 5.0
+                if not (0.5 <= self._grim_scale_x <= 5.0):
+                    self._grim_scale_x = 1.0
+                if not (0.5 <= self._grim_scale_y <= 5.0):
+                    self._grim_scale_y = 1.0
+                    
+                print(f"   📏 grim→compositor scale: X={self._grim_scale_x:.4f}, Y={self._grim_scale_y:.4f}")
+                print(f"      (ydotool ({test_x},{test_y}) → actual ({actual[0]},{actual[1]}))")
+                return
+        except Exception as e:
+            print(f"   ⚠️ grim scale detection failed: {e}")
         
-        # Calibrate X
-        start = get_cursor_pos()
-        if start:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_X, 300)
-            self.ui.syn()
-            time.sleep(0.1)
-            end = get_cursor_pos()
-            if end:
-                actual = end[0] - start[0]
-                if actual != 0:
-                    self._evrel_ratio_x = 300.0 / actual  # EV_REL units per pixel
-                # Move back
-                self.ui.write(ecodes.EV_REL, ecodes.REL_X, -300)
-                self.ui.syn()
-                time.sleep(0.1)
-        
-        # Calibrate Y
-        start = get_cursor_pos()
-        if start:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, 300)
-            self.ui.syn()
-            time.sleep(0.1)
-            end = get_cursor_pos()
-            if end:
-                actual = end[1] - start[1]
-                if actual != 0:
-                    self._evrel_ratio_y = 300.0 / actual  # EV_REL units per pixel
-                # Move back
-                self.ui.write(ecodes.EV_REL, ecodes.REL_Y, -300)
-                self.ui.syn()
-                time.sleep(0.1)
-        
-        # Clamp
-        self._evrel_ratio_x = max(0.1, min(10.0, self._evrel_ratio_x))
-        self._evrel_ratio_y = max(0.1, min(10.0, self._evrel_ratio_y))
-        
-        print(f"   📏 EV_REL ratio: X={self._evrel_ratio_x:.4f}, Y={self._evrel_ratio_y:.4f} (EV_REL units/pixel)")
+        # Fallback: assume 1:1
+        self._grim_scale_x = 1.0
+        self._grim_scale_y = 1.0
+        print("   📏 grim→compositor scale: 1.0 (fallback)")
 
     @staticmethod
     def _ensure_ydotoold():
@@ -149,39 +148,49 @@ class LinuxInput(InputInterface):
 
     def absolute_move(self, x: int, y: int):
         """Move cursor to absolute position.
-
-        Uses internal tracking only — no hyprctl sync during drawing.
-        hyprctl cursorpos returns the PHYSICAL mouse cursor position,
-        not the virtual uinput device cursor. Mixing them causes drift.
+        
+        Converts grim coordinates to compositor coordinates using the
+        detected scale factor, then uses ydotool --absolute.
         """
         target_x, target_y = int(x), int(y)
+        
+        # Convert grim coords to compositor coords
+        comp_x = int(target_x * self._grim_scale_x)
+        comp_y = int(target_y * self._grim_scale_y)
+        
+        # Clamp to screen bounds
+        comp_x = max(0, min(3840, comp_x))
+        comp_y = max(0, min(2160, comp_y))
+        
+        self._ensure_ydotoold()
+        
+        try:
+            result = subprocess.run(
+                ["ydotool", "mousemove", "--absolute", "-x", str(comp_x), "-y", str(comp_y)],
+                capture_output=True, timeout=2
+            )
+            if result.returncode == 0:
+                self._cursor_x = target_x
+                self._cursor_y = target_y
+                return
+        except Exception:
+            pass
+        
+        # Fallback: use EV_REL from internal tracking
         self.move_mouse(target_x, target_y)
 
     def set_screen_resolution(self, width: int, height: int):
         self.screen_width = width
         self.screen_height = height
-        # NOTE: Do NOT call sync_cursor_position here.
-        # hyprctl returns the physical mouse position, not the uinput virtual cursor.
-        # The virtual cursor starts at screen center (set in __init__).
 
     def sync_cursor_position(self):
         """Query actual cursor position from Hyprland and sync internal tracking."""
-        try:
-            result = subprocess.run(
-                ["hyprctl", "cursorpos"],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0:
-                # Output format: "1234, 567" or "1234,567"
-                parts = result.stdout.strip().replace(" ", "").split(",")
-                if len(parts) == 2:
-                    self._cursor_x = int(parts[0])
-                    self._cursor_y = int(parts[1])
-                    print(f"   🖱️  Cursor synced to ({self._cursor_x}, {self._cursor_y})")
-                    return
-        except Exception:
-            pass
-        # Fallback: assume center of screen
+        pos = self._get_cursor_pos_hyprctl()
+        if pos:
+            self._cursor_x = pos[0]
+            self._cursor_y = pos[1]
+            print(f"   🖱️  Cursor synced to ({self._cursor_x}, {self._cursor_y})")
+            return
         self._cursor_x = self.screen_width // 2
         self._cursor_y = self.screen_height // 2
         print(f"   🖱️  Cursor position unknown, assuming center ({self._cursor_x}, {self._cursor_y})")
@@ -227,13 +236,8 @@ class LinuxInput(InputInterface):
 
     def move_mouse(self, x: int, y: int):
         """Move mouse to absolute screen coordinates using relative deltas."""
-        # Calculate delta from current tracked position
         delta_x = int(x) - int(self._cursor_x)
         delta_y = int(y) - int(self._cursor_y)
-        
-        # Apply EV_REL scale factor (compositor may scale input events)
-        delta_x = int(delta_x * self._evrel_ratio_x)
-        delta_y = int(delta_y * self._evrel_ratio_y)
         
         # Clamp deltas to int16 range (evdev uses int16 for REL)
         delta_x = max(-32768, min(32767, delta_x))
