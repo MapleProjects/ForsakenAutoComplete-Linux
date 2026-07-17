@@ -10,3 +10,4 @@ dist/
 *.so
 *.o
 debug_*.png
+venv/
