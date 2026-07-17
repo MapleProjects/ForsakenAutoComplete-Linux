@@ -2061,8 +2061,12 @@ class FlowPuzzleSolver:
             self.input.move_mouse(grid_cx, grid_cy)
         time.sleep(0.15)  # Pause for cursor to settle
         
-        # Initial cursor position: use internal tracking (set at startup)
-        print(f"   [CAL] Cursor tracking: ({self.input._cursor_x}, {self.input._cursor_y})")
+        # === POSITION SYNC: get actual cursor position ONCE before drawing ===
+        # hyprctl gives us the real starting position. After this, we track
+        # purely through EV_REL deltas (no more hyprctl during drawing).
+        if hasattr(self.input, 'sync_cursor_position'):
+            self.input.sync_cursor_position()
+        print(f"   [CAL] Cursor synced to ({self.input._cursor_x}, {self.input._cursor_y})")
         
         for color_id, path in solutions.items():
             if emergency_stop_flag: return
