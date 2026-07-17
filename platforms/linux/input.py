@@ -70,9 +70,14 @@ class LinuxInput(InputInterface):
         self._detect_evrel_scale()
 
     def _detect_evrel_scale(self):
-        """Detect EV_REL to screen pixel scale factor by measuring actual cursor movement."""
-        self._evrel_scale_x = 1.0
-        self._evrel_scale_y = 1.0
+        """Detect EV_REL units per pixel ratio by measuring actual cursor movement.
+        
+        Sends a known EV_REL delta, measures how many pixels the cursor
+        actually moved via hyprctl, then computes the ratio needed to
+        convert pixel deltas to EV_REL units.
+        """
+        self._evrel_ratio_x = 1.0  # EV_REL units per pixel (X)
+        self._evrel_ratio_y = 1.0  # EV_REL units per pixel (Y)
         
         def get_cursor_pos():
             try:
@@ -95,7 +100,7 @@ class LinuxInput(InputInterface):
             if end:
                 actual = end[0] - start[0]
                 if actual != 0:
-                    self._evrel_scale_x = 300.0 / actual
+                    self._evrel_ratio_x = 300.0 / actual  # EV_REL units per pixel
                 # Move back
                 self.ui.write(ecodes.EV_REL, ecodes.REL_X, -300)
                 self.ui.syn()
@@ -111,17 +116,17 @@ class LinuxInput(InputInterface):
             if end:
                 actual = end[1] - start[1]
                 if actual != 0:
-                    self._evrel_scale_y = 300.0 / actual
+                    self._evrel_ratio_y = 300.0 / actual  # EV_REL units per pixel
                 # Move back
                 self.ui.write(ecodes.EV_REL, ecodes.REL_Y, -300)
                 self.ui.syn()
                 time.sleep(0.1)
         
         # Clamp
-        self._evrel_scale_x = max(0.1, min(5.0, self._evrel_scale_x))
-        self._evrel_scale_y = max(0.1, min(5.0, self._evrel_scale_y))
+        self._evrel_ratio_x = max(0.1, min(10.0, self._evrel_ratio_x))
+        self._evrel_ratio_y = max(0.1, min(10.0, self._evrel_ratio_y))
         
-        print(f"   📏 EV_REL scale: X={self._evrel_scale_x:.4f}, Y={self._evrel_scale_y:.4f}")
+        print(f"   📏 EV_REL ratio: X={self._evrel_ratio_x:.4f}, Y={self._evrel_ratio_y:.4f} (EV_REL units/pixel)")
 
     @staticmethod
     def _ensure_ydotoold():
@@ -227,8 +232,8 @@ class LinuxInput(InputInterface):
         delta_y = int(y) - int(self._cursor_y)
         
         # Apply EV_REL scale factor (compositor may scale input events)
-        delta_x = int(delta_x / self._evrel_scale_x)
-        delta_y = int(delta_y / self._evrel_scale_y)
+        delta_x = int(delta_x * self._evrel_ratio_x)
+        delta_y = int(delta_y * self._evrel_ratio_y)
         
         # Clamp deltas to int16 range (evdev uses int16 for REL)
         delta_x = max(-32768, min(32767, delta_x))
