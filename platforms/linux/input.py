@@ -66,18 +66,53 @@ class LinuxInput(InputInterface):
         
         print(f"   🖱️  Mouse: uinput EV_REL + ydotool absolute (pointer mode)")
 
-    def absolute_move(self, x: int, y: int):
-        """Move cursor to absolute position using ydotool (reliable on Wayland)."""
+    @staticmethod
+    def _ensure_ydotoold():
+        """Start ydotoold daemon if not already running."""
         try:
-            subprocess.run(
-                ["ydotool", "mousemove", "--absolute", "-x", str(int(x)), "-y", str(int(y))],
+            result = subprocess.run(
+                ["pgrep", "-x", "ydotoold"],
                 capture_output=True, timeout=2
             )
-            self._cursor_x = int(x)
-            self._cursor_y = int(y)
+            if result.returncode != 0:
+                # ydotoold not running — start it
+                subprocess.Popen(
+                    ["ydotoold"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                time.sleep(0.3)  # Give daemon time to start
+        except Exception:
+            pass
+
+    def absolute_move(self, x: int, y: int):
+        """Move cursor to absolute position using ydotool (reliable on Wayland)."""
+        target_x, target_y = int(x), int(y)
+
+        # Ensure ydotoold daemon is running (required for ydotool absolute)
+        self._ensure_ydotoold()
+
+        try:
+            result = subprocess.run(
+                ["ydotool", "mousemove", "--absolute", "-x", str(target_x), "-y", str(target_y)],
+                capture_output=True, timeout=2
+            )
+            if result.returncode == 0:
+                self._cursor_x = target_x
+                self._cursor_y = target_y
+                return
+            else:
+                stderr = result.stderr.decode().strip() if result.stderr else ""
+                if stderr:
+                    print(f"   ⚠️ ydotool failed (rc={result.returncode}): {stderr}")
         except Exception as e:
-            print(f"   ⚠️ ydotool absolute move failed: {e}, falling back to EV_REL")
-            self.move_mouse(x, y)
+            print(f"   ⚠️ ydotool exception: {e}")
+
+        # Fallback: sync actual position, then use EV_REL delta
+        self.sync_cursor_position()
+        print(f"   🖱️  Fallback EV_REL: ({self._cursor_x},{self._cursor_y}) → ({target_x},{target_y})")
+        self.move_mouse(target_x, target_y)
 
     def set_screen_resolution(self, width: int, height: int):
         self.screen_width = width
