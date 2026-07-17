@@ -2006,7 +2006,12 @@ class FlowPuzzleSolver:
             if emergency_stop_flag: return
             
             progress = min(elapsed / duration, 1.0)
-            current_radius = max_radius * progress
+            # Radius envelope: expand then contract back to 0
+            # Ensures the wobble ends at the exact center position
+            if progress < 0.5:
+                current_radius = max_radius * (progress * 2.0)
+            else:
+                current_radius = max_radius * ((1.0 - progress) * 2.0)
             angle = progress * (4 * np.pi)
             
             offset_x = int(current_radius * np.cos(angle))
@@ -2016,6 +2021,21 @@ class FlowPuzzleSolver:
             self.input.move_mouse(center_x + offset_x, center_y + offset_y)
             self.input.mouse_down() # Spam down
             time.sleep(WOBBLE_LOOP_SLEEP)
+
+    def _get_cursor_pos(self):
+        """Query actual cursor position from Hyprland."""
+        try:
+            result = subprocess.run(
+                ["hyprctl", "cursorpos"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0:
+                parts = result.stdout.strip().replace(" ", "").split(",")
+                if len(parts) == 2:
+                    return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+        return None, None
 
     def draw_solution(self, solutions, grid_origin, grid_rect_size):
         cell_w = grid_rect_size[0] / GRID_SIZE
@@ -2033,7 +2053,26 @@ class FlowPuzzleSolver:
             self.input.absolute_move(grid_cx, grid_cy)
         else:
             self.input.move_mouse(grid_cx, grid_cy)
-        time.sleep(0.05)  # Brief pause for cursor to settle
+        time.sleep(0.1)  # Pause for cursor to settle
+        
+        # === CALIBRATION: measure grim↔ydotool offset ===
+        # grim coordinates may not match ydotool absolute coordinates
+        # on mirrored displays or with scaling. Measure the actual offset
+        # and compensate for all subsequent absolute moves.
+        cal_offset_x = 0
+        cal_offset_y = 0
+        actual_x, actual_y = self._get_cursor_pos()
+        if actual_x is not None:
+            cal_offset_x = actual_x - grid_cx
+            cal_offset_y = actual_y - grid_cy
+            if DEBUG_MODE:
+                print(f"   [CAL] grim↔ydotool offset: ({cal_offset_x}, {cal_offset_y})")
+            # Update internal tracking to match actual position
+            if hasattr(self.input, '_cursor_x'):
+                self.input._cursor_x = actual_x
+                self.input._cursor_y = actual_y
+        elif DEBUG_MODE:
+            print("   [CAL] No se pudo obtener posición del cursor (sin calibración)")
         
         for color_id, path in solutions.items():
             if emergency_stop_flag: return
@@ -2081,10 +2120,13 @@ class FlowPuzzleSolver:
             
             # Use absolute move to start of each color — prevents accumulated EV_REL drift
             start_p = points_int[0]
+            # Apply calibration offset to compensate for grim↔ydotool mismatch
+            target_x = start_p[0] - cal_offset_x
+            target_y = start_p[1] - cal_offset_y
             if hasattr(self.input, 'absolute_move'):
-                self.input.absolute_move(start_p[0], start_p[1])
+                self.input.absolute_move(target_x, target_y)
             else:
-                self.input.move_mouse(start_p[0], start_p[1])
+                self.input.move_mouse(target_x, target_y)
             time.sleep(DELAY_BEFORE_MOUSEDOWN)
             
             if emergency_stop_flag: return
