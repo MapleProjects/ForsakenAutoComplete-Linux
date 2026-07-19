@@ -1,10 +1,9 @@
 try:
     import evdev
-    from evdev import ecodes, AbsInfo
+    from evdev import ecodes
 except ImportError:
     evdev = None
     ecodes = None
-    AbsInfo = None
 
 import os
 import subprocess
@@ -18,8 +17,8 @@ class LinuxInput(InputInterface):
     Input via evdev uinput — keyboard AND mouse.
     Uses Hyprland's native Lua dispatcher for absolute warping,
     and EV_REL relative virtual mouse movements for precise drawing.
-    Hybrid capabilities (EV_ABS + EV_REL) ensure all click and drag events
-    are correctly registered under Wayland/Xwayland.
+    Pure relative mouse emulation (no EV_ABS) prevents the compositor
+    from ignoring relative events during active clicks/drags.
     """
     
     def __init__(self):
@@ -53,16 +52,11 @@ class LinuxInput(InputInterface):
                 ecodes.KEY_J, ecodes.KEY_W, ecodes.KEY_A, ecodes.KEY_S, ecodes.KEY_D,
                 ecodes.KEY_F4,
                 ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE,
-                ecodes.BTN_TOUCH, ecodes.BTN_TOOL_FINGER,
             ],
             ecodes.EV_REL: [
                 ecodes.REL_X,
                 ecodes.REL_Y,
                 ecodes.REL_WHEEL,
-            ],
-            ecodes.EV_ABS: [
-                (ecodes.ABS_X, AbsInfo(value=0, min=0, max=self.screen_width, fuzz=0, flat=0, resolution=0)),
-                (ecodes.ABS_Y, AbsInfo(value=0, min=0, max=self.screen_height, fuzz=0, flat=0, resolution=0)),
             ]
         }
 
@@ -283,17 +277,11 @@ class LinuxInput(InputInterface):
     def mouse_down(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 1)
-        if button == 'left':
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 1)
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 1)
         self.ui.syn()
 
     def mouse_up(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 0)
-        if button == 'left':
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 0)
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 0)
         self.ui.syn()
 
     def click(self, x: int, y: int, button: str = 'left'):
