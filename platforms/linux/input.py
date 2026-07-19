@@ -52,8 +52,11 @@ class LinuxInput(InputInterface):
                 ecodes.KEY_J, ecodes.KEY_W, ecodes.KEY_A, ecodes.KEY_S, ecodes.KEY_D,
                 ecodes.KEY_F4,
                 ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE,
+                ecodes.BTN_TOUCH,
             ],
             ecodes.EV_REL: [
+                ecodes.REL_X,
+                ecodes.REL_Y,
                 ecodes.REL_WHEEL,
             ],
             ecodes.EV_ABS: [
@@ -181,21 +184,22 @@ class LinuxInput(InputInterface):
     def mouse_down(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 1)
+        if button == 'left':
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 1)
         self.ui.syn()
 
     def mouse_up(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 0)
+        if button == 'left':
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 0)
         self.ui.syn()
 
     def click(self, x: int, y: int, button: str = 'left'):
         self.move_mouse(x, y)
-        btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
-        self.ui.write(ecodes.EV_KEY, btn_code, 1)
-        self.ui.syn()
+        self.mouse_down(button)
         time.sleep(0.01)
-        self.ui.write(ecodes.EV_KEY, btn_code, 0)
-        self.ui.syn()
+        self.mouse_up(button)
 
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.0):
         self.move_mouse(start_x, start_y)
