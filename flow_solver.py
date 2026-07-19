@@ -82,8 +82,8 @@ WOBBLE_LOOP_SLEEP = 0.01       # Pausa dentro del bucle de wobble (Afecta veloci
 
 # GEOMETRÍA (Porcentajes del tamaño de celda)
 WOBBLE_RATIO = 0.26       # Tamaño del rombo de agarre (0.30 = 30%)
-START_PATH_BIAS = 0.11  # Retroceso inicial para alargar el trazo (0.13 = 13%)
-END_PATH_BIAS = 0.12    # Adelantamiento final para alargar el trazo (0.12 = 12%)
+START_PATH_BIAS = 0.20  # Retroceso inicial para alargar el trazo (0.20 = 20%)
+END_PATH_BIAS = 0.28    # Adelantamiento final para alargar el trazo (0.28 = 28%)
 MIN_COLORS_TO_SOLVE = 3 # Cantidad mínima de colores para intentar resolver
 
 STEP_DELAY_MS = 10         # Delay por paso entre casillas (general)
@@ -2041,10 +2041,11 @@ class FlowPuzzleSolver:
         cell_w = grid_rect_size[0] / GRID_SIZE
         cell_h = grid_rect_size[1] / GRID_SIZE
         
-        if DEBUG_MODE:
-            print(f"   [EXEC] Grid origin: ({grid_origin[0]}, {grid_origin[1]}), size: ({grid_rect_size[0]}, {grid_rect_size[1]})")
-            print(f"   [EXEC] Cell size: {cell_w:.1f} x {cell_h:.1f}")
-        
+        # Recalibrate scale factors at the exact moment of drawing
+        if hasattr(self.input, '_calibrate_ev_scale'):
+            print("   📏 Recalibrando escala de dibujo...")
+            self.input._calibrate_ev_scale()
+
         # === SCALE DETECTION: grim resolution vs ydotool coordinate space ===
         # grim captures at physical pixel resolution (Wayland output).
         # ydotool absolute uses the compositor's logical coordinate space.
