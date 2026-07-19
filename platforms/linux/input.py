@@ -18,7 +18,7 @@ class LinuxInput(InputInterface):
     Input via evdev uinput — keyboard AND mouse.
     Mouse uses EV_ABS (absolute movement) for Wayland/Hyprland compatibility
     without velocity-dependent pointer acceleration issues.
-    Button events use EV_KEY (BTN_LEFT/BTN_RIGHT).
+    Button events use EV_KEY (BTN_LEFT/BTN_RIGHT/BTN_TOUCH).
     """
     
     def __init__(self):
@@ -52,11 +52,9 @@ class LinuxInput(InputInterface):
                 ecodes.KEY_J, ecodes.KEY_W, ecodes.KEY_A, ecodes.KEY_S, ecodes.KEY_D,
                 ecodes.KEY_F4,
                 ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE,
-                ecodes.BTN_TOUCH,
+                ecodes.BTN_TOUCH, ecodes.BTN_TOOL_FINGER,
             ],
             ecodes.EV_REL: [
-                ecodes.REL_X,
-                ecodes.REL_Y,
                 ecodes.REL_WHEEL,
             ],
             ecodes.EV_ABS: [
@@ -83,14 +81,7 @@ class LinuxInput(InputInterface):
         self._cursor_x = self.screen_width // 2
         self._cursor_y = self.screen_height // 2
 
-        # Scale factors for EV_REL drawing (compensated for compositor acceleration)
-        self._ev_scale_x = 1.0
-        self._ev_scale_y = 1.0
-
-        print(f"   🖱️  Mouse: Hybrid EV_ABS/EV_REL mode - {self.screen_width}x{self.screen_height}")
-
-        # Perform scale calibration for drawing
-        self._calibrate_ev_scale()
+        print(f"   🖱️  Mouse: uinput EV_ABS (absolute mode) - {self.screen_width}x{self.screen_height}")
 
     @staticmethod
     def _ensure_ydotoold():
@@ -183,101 +174,16 @@ class LinuxInput(InputInterface):
             self.ui.write(ecodes.EV_KEY, code, 0)
             self.ui.syn()
 
-    def _get_cursor_pos_hyprctl_internal(self):
-        try:
-            result = subprocess.run(
-                ["hyprctl", "cursorpos"],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0:
-                parts = result.stdout.strip().replace(" ", "").split(",")
-                if len(parts) == 2:
-                    return int(parts[0]), int(parts[1])
-        except Exception:
-            pass
-        return None, None
-
-    def _calibrate_ev_scale(self):
-        """Calibrate EV_REL scale factor at the exact drawing velocity."""
-        try:
-            cx = self.screen_width // 2
-            cy = self.screen_height // 2
-            self.absolute_move(cx, cy)
-            time.sleep(0.3)
-            
-            start = self._get_cursor_pos_hyprctl_internal()
-            if not start[0]:
-                print("   ⚠️ EV_REL scale calibration failed: no hyprctl")
-                return
-
-            step_size = 15
-            steps = 10
-            for _ in range(steps):
-                self.ui.write(ecodes.EV_REL, ecodes.REL_X, step_size)
-                self.ui.syn()
-                time.sleep(0.002)
-
-            time.sleep(0.2)
-            after_x = self._get_cursor_pos_hyprctl_internal()
-            if after_x[0]:
-                actual_dx = after_x[0] - start[0]
-                if actual_dx > 0:
-                    self._ev_scale_x = actual_dx / (step_size * steps)
-
-            self.absolute_move(cx, cy)
-            time.sleep(0.3)
-
-            start = self._get_cursor_pos_hyprctl_internal()
-            for _ in range(steps):
-                self.ui.write(ecodes.EV_REL, ecodes.REL_Y, step_size)
-                self.ui.syn()
-                time.sleep(0.002)
-
-            time.sleep(0.2)
-            after_y = self._get_cursor_pos_hyprctl_internal()
-            if after_y[1]:
-                actual_dy = after_y[1] - start[1]
-                if actual_dy > 0:
-                    self._ev_scale_y = actual_dy / (step_size * steps)
-
-            self.absolute_move(cx, cy)
-            time.sleep(0.1)
-
-            if not (0.5 <= self._ev_scale_x <= 5.0):
-                self._ev_scale_x = 1.0
-            if not (0.5 <= self._ev_scale_y <= 5.0):
-                self._ev_scale_y = 1.0
-
-            print(f"   📏 EV_REL drawing scale: X={self._ev_scale_x:.4f}, Y={self._ev_scale_y:.4f}")
-        except Exception as e:
-            print(f"   ⚠️ EV_REL scale calibration failed: {e}")
-
     def move_mouse(self, x: int, y: int):
-        """Move mouse to absolute coordinates using EV_REL deltas with drawing scale compensation."""
-        delta_x = int(x) - int(self._cursor_x)
-        delta_y = int(y) - int(self._cursor_y)
-
-        ev_delta_x = int(delta_x / self._ev_scale_x) if self._ev_scale_x != 0 else delta_x
-        ev_delta_y = int(delta_y / self._ev_scale_y) if self._ev_scale_y != 0 else delta_y
-
-        ev_delta_x = max(-32768, min(32767, ev_delta_x))
-        ev_delta_y = max(-32768, min(32767, ev_delta_y))
-
-        if ev_delta_x != 0:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_X, ev_delta_x)
-        if ev_delta_y != 0:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, ev_delta_y)
-        self.ui.syn()
-
-        self._cursor_x = int(x)
-        self._cursor_y = int(y)
-
+        """Move mouse to absolute screen coordinates using EV_ABS."""
+        self.absolute_move(x, y)
 
     def mouse_down(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 1)
         if button == 'left':
             self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 1)
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 1)
         self.ui.syn()
 
     def mouse_up(self, button: str = 'left'):
@@ -285,6 +191,7 @@ class LinuxInput(InputInterface):
         self.ui.write(ecodes.EV_KEY, btn_code, 0)
         if button == 'left':
             self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 0)
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 0)
         self.ui.syn()
 
     def click(self, x: int, y: int, button: str = 'left'):
