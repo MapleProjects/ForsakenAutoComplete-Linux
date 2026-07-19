@@ -125,6 +125,9 @@ class LinuxInput(InputInterface):
 
     def _calibrate_ev_scale(self):
         """Calibrate EV_REL scale factor at the exact drawing velocity."""
+        # Sensible default/fallback for Hyprland cursor scaling on CachyOS
+        self._ev_scale_x = 1.55
+        self._ev_scale_y = 1.55
         try:
             cx = self.screen_width // 2
             cy = self.screen_height // 2
@@ -133,7 +136,7 @@ class LinuxInput(InputInterface):
             
             start = self._get_cursor_pos_hyprctl_internal()
             if not start[0]:
-                print("   ⚠️ EV_REL scale calibration failed: no hyprctl")
+                print(f"   ⚠️ EV_REL scale calibration failed (no hyprctl). Using default fallback: X={self._ev_scale_x:.4f}, Y={self._ev_scale_y:.4f}")
                 return
 
             step_size = 15
@@ -141,7 +144,7 @@ class LinuxInput(InputInterface):
             for _ in range(steps):
                 self.ui.write(ecodes.EV_REL, ecodes.REL_X, step_size)
                 self.ui.syn()
-                time.sleep(0.002)
+                time.sleep(0.01) # 10ms to match successful test_rel script
 
             time.sleep(0.2)
             after_x = self._get_cursor_pos_hyprctl_internal()
@@ -157,7 +160,7 @@ class LinuxInput(InputInterface):
             for _ in range(steps):
                 self.ui.write(ecodes.EV_REL, ecodes.REL_Y, step_size)
                 self.ui.syn()
-                time.sleep(0.002)
+                time.sleep(0.01) # 10ms to match successful test_rel script
 
             time.sleep(0.2)
             after_y = self._get_cursor_pos_hyprctl_internal()
@@ -170,13 +173,15 @@ class LinuxInput(InputInterface):
             time.sleep(0.1)
 
             if not (0.5 <= self._ev_scale_x <= 5.0):
-                self._ev_scale_x = 1.0
+                self._ev_scale_x = 1.55
             if not (0.5 <= self._ev_scale_y <= 5.0):
-                self._ev_scale_y = 1.0
+                self._ev_scale_y = 1.55
 
             print(f"   📏 EV_REL drawing scale: X={self._ev_scale_x:.4f}, Y={self._ev_scale_y:.4f}")
         except Exception as e:
-            print(f"   ⚠️ EV_REL scale calibration failed: {e}")
+            self._ev_scale_x = 1.55
+            self._ev_scale_y = 1.55
+            print(f"   ⚠️ EV_REL scale calibration failed: {e}. Using default fallback: X={self._ev_scale_x:.4f}, Y={self._ev_scale_y:.4f}")
 
     def absolute_move(self, x: int, y: int):
         """Move cursor to absolute position using Hyprland's native Lua dispatcher."""
