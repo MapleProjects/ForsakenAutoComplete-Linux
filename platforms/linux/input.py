@@ -1,9 +1,10 @@
 try:
     import evdev
-    from evdev import ecodes
+    from evdev import ecodes, AbsInfo
 except ImportError:
     evdev = None
     ecodes = None
+    AbsInfo = None
 
 import os
 import subprocess
@@ -17,6 +18,8 @@ class LinuxInput(InputInterface):
     Input via evdev uinput — keyboard AND mouse.
     Uses Hyprland's native Lua dispatcher for absolute warping,
     and EV_REL relative virtual mouse movements for precise drawing.
+    Hybrid capabilities (EV_ABS + EV_REL) ensure all click and drag events
+    are correctly registered under Wayland/Xwayland.
     """
     
     def __init__(self):
@@ -50,11 +53,16 @@ class LinuxInput(InputInterface):
                 ecodes.KEY_J, ecodes.KEY_W, ecodes.KEY_A, ecodes.KEY_S, ecodes.KEY_D,
                 ecodes.KEY_F4,
                 ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE,
+                ecodes.BTN_TOUCH, ecodes.BTN_TOOL_FINGER,
             ],
             ecodes.EV_REL: [
                 ecodes.REL_X,
                 ecodes.REL_Y,
                 ecodes.REL_WHEEL,
+            ],
+            ecodes.EV_ABS: [
+                (ecodes.ABS_X, AbsInfo(value=0, min=0, max=self.screen_width, fuzz=0, flat=0, resolution=0)),
+                (ecodes.ABS_Y, AbsInfo(value=0, min=0, max=self.screen_height, fuzz=0, flat=0, resolution=0)),
             ]
         }
 
@@ -62,13 +70,13 @@ class LinuxInput(InputInterface):
             self.ui = evdev.UInput(
                 cap, 
                 name='Forsaken-Auto-Input', 
-                version=0x1,
+                version=0x3,
                 input_props=[ecodes.INPUT_PROP_POINTER],
             )
         except PermissionError:
             raise PermissionError("Could not create uinput device. Permission denied.")
         except TypeError:
-            self.ui = evdev.UInput(cap, name='Forsaken-Auto-Input', version=0x1)
+            self.ui = evdev.UInput(cap, name='Forsaken-Auto-Input', version=0x3)
 
         # Allow compositor to register the virtual device
         time.sleep(1.0)
@@ -275,11 +283,17 @@ class LinuxInput(InputInterface):
     def mouse_down(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 1)
+        if button == 'left':
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 1)
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 1)
         self.ui.syn()
 
     def mouse_up(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 0)
+        if button == 'left':
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 0)
+            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 0)
         self.ui.syn()
 
     def click(self, x: int, y: int, button: str = 'left'):
@@ -289,7 +303,7 @@ class LinuxInput(InputInterface):
         self.mouse_up(button)
 
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.0):
-        self.absolute_move(start_x, start_y)
+        self.move_mouse(start_x, start_y)
         time.sleep(0.05)
         self.mouse_down()
         if duration > 0:
