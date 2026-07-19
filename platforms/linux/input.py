@@ -1,9 +1,10 @@
 try:
     import evdev
-    from evdev import ecodes
+    from evdev import ecodes, AbsInfo
 except ImportError:
     evdev = None
     ecodes = None
+    AbsInfo = None
 
 import os
 import subprocess
@@ -15,13 +16,30 @@ from core.input_interface import InputInterface
 class LinuxInput(InputInterface):
     """
     Input via evdev uinput — keyboard AND mouse.
-    Mouse uses EV_REL (relative movement) for Wayland/Hyprland compatibility.
+    Mouse uses EV_ABS (absolute movement) for Wayland/Hyprland compatibility
+    without velocity-dependent pointer acceleration issues.
     Button events use EV_KEY (BTN_LEFT/BTN_RIGHT).
     """
     
     def __init__(self):
         if not evdev:
             raise ImportError("evdev is required. Install: pip install evdev")
+
+        # Try to get screen resolution via hyprctl
+        self.screen_width = 1920
+        self.screen_height = 1080
+        try:
+            result = subprocess.run(
+                ["hyprctl", "monitors", "-j"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0:
+                monitors = json.loads(result.stdout)
+                if monitors:
+                    self.screen_width = monitors[0].get("width", 1920)
+                    self.screen_height = monitors[0].get("height", 1080)
+        except Exception:
+            pass
 
         cap = {
             ecodes.EV_KEY: [
@@ -36,10 +54,12 @@ class LinuxInput(InputInterface):
                 ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE,
             ],
             ecodes.EV_REL: [
-                ecodes.REL_X,
-                ecodes.REL_Y,
                 ecodes.REL_WHEEL,
             ],
+            ecodes.EV_ABS: [
+                (ecodes.ABS_X, AbsInfo(value=0, min=0, max=self.screen_width, fuzz=0, flat=0, resolution=0)),
+                (ecodes.ABS_Y, AbsInfo(value=0, min=0, max=self.screen_height, fuzz=0, flat=0, resolution=0)),
+            ]
         }
 
         try:
@@ -55,96 +75,12 @@ class LinuxInput(InputInterface):
             self.ui = evdev.UInput(cap, name='Forsaken-Auto-Input', version=0x1)
 
         self._key_map = self._build_key_map()
-        self.screen_width = 1920
-        self.screen_height = 1080
 
         # Internal cursor position tracking (absolute pixels on screen)
         self._cursor_x = self.screen_width // 2
         self._cursor_y = self.screen_height // 2
 
-        # EV_REL to screen scale (Hyprland applies acceleration to virtual devices)
-        # Compensate by dividing delta by this factor before sending
-        self._ev_scale_x = 1.0
-        self._ev_scale_y = 1.0
-
-        print(f"   🖱️  Mouse: uinput EV_REL + hyprctl absolute (pointer mode)")
-
-        # Detect the EV_REL → screen coordinate ratio
-        self._detect_ev_scale()
-
-    def _get_cursor_pos_hyprctl(self):
-        """Get cursor position from Hyprland compositor."""
-        try:
-            result = subprocess.run(
-                ["hyprctl", "cursorpos"],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0:
-                parts = result.stdout.strip().replace(" ", "").split(",")
-                if len(parts) == 2:
-                    return int(parts[0]), int(parts[1])
-        except Exception:
-            pass
-        return None, None
-
-    def _detect_ev_scale(self):
-        """Detect ratio between EV_REL deltas and actual screen movement.
-
-        Hyprland applies pointer acceleration to virtual uinput devices,
-        causing EV_REL events to move the cursor MORE than requested.
-        We measure the actual ratio and compensate by dividing deltas.
-        """
-        # Send cursor to a safe position via EV_REL (from current pos)
-        # First, get current position
-        start = self._get_cursor_pos_hyprctl()
-        if not start:
-            print("   ⚠️ EV_REL scale detection failed: no hyprctl")
-            return
-
-        # Send known EV_REL delta and measure actual movement
-        test_delta = 200
-        try:
-            # X axis test
-            self.ui.write(ecodes.EV_REL, ecodes.REL_X, test_delta)
-            self.ui.syn()
-            time.sleep(0.2)
-            after_x = self._get_cursor_pos_hyprctl()
-            if after_x:
-                actual_dx = after_x[0] - start[0]
-                if actual_dx > 0:
-                    self._ev_scale_x = actual_dx / test_delta
-
-            # Y axis test
-            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, test_delta)
-            self.ui.syn()
-            time.sleep(0.2)
-            after_y = self._get_cursor_pos_hyprctl()
-            if after_y:
-                actual_dy = after_y[1] - start[1]
-                if actual_dy > 0:
-                    self._ev_scale_y = actual_dy / test_delta
-
-            # Return cursor to start
-            self.ui.write(ecodes.EV_REL, ecodes.REL_X, -test_delta)
-            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, -test_delta)
-            self.ui.syn()
-            time.sleep(0.1)
-
-            # Sanity check
-            if not (0.5 <= self._ev_scale_x <= 5.0):
-                self._ev_scale_x = 1.0
-            if not (0.5 <= self._ev_scale_y <= 5.0):
-                self._ev_scale_y = 1.0
-
-            print(f"   📏 EV_REL scale: X={self._ev_scale_x:.4f}, Y={self._ev_scale_y:.4f}")
-            print(f"      ({test_delta} EV → {after_x[0]-start[0] if after_x else '?'}px X, {after_y[1]-start[1] if after_y else '?'}px Y)")
-            return
-        except Exception as e:
-            print(f"   ⚠️ EV_REL scale detection failed: {e}")
-
-        self._ev_scale_x = 1.0
-        self._ev_scale_y = 1.0
-        print("   📏 EV_REL scale: 1.0 (fallback)")
+        print(f"   🖱️  Mouse: uinput EV_ABS (absolute mode) - {self.screen_width}x{self.screen_height}")
 
     @staticmethod
     def _ensure_ydotoold():
@@ -166,42 +102,11 @@ class LinuxInput(InputInterface):
             pass
 
     def absolute_move(self, x: int, y: int):
-        """Move cursor to absolute position.
-
-        Uses hyprctl cursorpos to get actual position, then EV_REL delta
-        compensated for Hyprland's pointer acceleration on virtual devices.
-        """
+        """Move cursor to absolute position using EV_ABS."""
         target_x, target_y = int(x), int(y)
-
-        # Get ACTUAL cursor position from compositor
-        actual = self._get_cursor_pos_hyprctl()
-        if actual:
-            current_x, current_y = actual
-        else:
-            current_x = int(self._cursor_x)
-            current_y = int(self._cursor_y)
-
-        # Calculate delta in screen pixels
-        delta_x = target_x - current_x
-        delta_y = target_y - current_y
-
-        # Compensate for Hyprland's EV_REL acceleration
-        # The compositor moves MORE than requested, so we divide
-        ev_delta_x = int(delta_x / self._ev_scale_x) if self._ev_scale_x != 0 else delta_x
-        ev_delta_y = int(delta_y / self._ev_scale_y) if self._ev_scale_y != 0 else delta_y
-
-        # Clamp to int16 range
-        ev_delta_x = max(-32768, min(32767, ev_delta_x))
-        ev_delta_y = max(-32768, min(32767, ev_delta_y))
-
-        # Send compensated relative movement
-        if ev_delta_x != 0:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_X, ev_delta_x)
-        if ev_delta_y != 0:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, ev_delta_y)
+        self.ui.write(ecodes.EV_ABS, ecodes.ABS_X, target_x)
+        self.ui.write(ecodes.EV_ABS, ecodes.ABS_Y, target_y)
         self.ui.syn()
-
-        # Update internal tracking to TARGET
         self._cursor_x = target_x
         self._cursor_y = target_y
 
@@ -211,12 +116,20 @@ class LinuxInput(InputInterface):
 
     def sync_cursor_position(self):
         """Query actual cursor position from Hyprland and sync internal tracking."""
-        pos = self._get_cursor_pos_hyprctl()
-        if pos:
-            self._cursor_x = pos[0]
-            self._cursor_y = pos[1]
-            print(f"   🖱️  Cursor synced to ({self._cursor_x}, {self._cursor_y})")
-            return
+        try:
+            result = subprocess.run(
+                ["hyprctl", "cursorpos"],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0:
+                parts = result.stdout.strip().replace(" ", "").split(",")
+                if len(parts) == 2:
+                    self._cursor_x = int(parts[0])
+                    self._cursor_y = int(parts[1])
+                    print(f"   🖱️  Cursor synced to ({self._cursor_x}, {self._cursor_y})")
+                    return
+        except Exception:
+            pass
         self._cursor_x = self.screen_width // 2
         self._cursor_y = self.screen_height // 2
         print(f"   🖱️  Cursor position unknown, assuming center ({self._cursor_x}, {self._cursor_y})")
@@ -261,28 +174,9 @@ class LinuxInput(InputInterface):
             self.ui.syn()
 
     def move_mouse(self, x: int, y: int):
-        """Move mouse to absolute screen coordinates using compensated EV_REL."""
-        delta_x = int(x) - int(self._cursor_x)
-        delta_y = int(y) - int(self._cursor_y)
+        """Move mouse to absolute screen coordinates using EV_ABS."""
+        self.absolute_move(x, y)
 
-        # Compensate for Hyprland's EV_REL acceleration
-        ev_delta_x = int(delta_x / self._ev_scale_x) if self._ev_scale_x != 0 else delta_x
-        ev_delta_y = int(delta_y / self._ev_scale_y) if self._ev_scale_y != 0 else delta_y
-
-        # Clamp to int16 range
-        ev_delta_x = max(-32768, min(32767, ev_delta_x))
-        ev_delta_y = max(-32768, min(32767, ev_delta_y))
-
-        # Send compensated relative movement
-        if ev_delta_x != 0:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_X, ev_delta_x)
-        if ev_delta_y != 0:
-            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, ev_delta_y)
-        self.ui.syn()
-
-        # Update internal position tracking
-        self._cursor_x = int(x)
-        self._cursor_y = int(y)
 
     def mouse_down(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
