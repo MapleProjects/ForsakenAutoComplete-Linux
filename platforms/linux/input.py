@@ -66,10 +66,7 @@ class LinuxInput(InputInterface):
         self._grim_scale_x = 1.0
         self._grim_scale_y = 1.0
         
-        print(f"   🖱️  Mouse: uinput EV_REL + ydotool absolute (pointer mode)")
-        
-        # Detect the scale between grim coordinates and compositor coordinates
-        self._detect_grim_scale()
+        print(f"   🖱️  Mouse: uinput EV_REL + hyprctl absolute (pointer mode)")
 
     def _get_cursor_pos_hyprctl(self):
         """Get cursor position from Hyprland compositor."""
@@ -149,35 +146,39 @@ class LinuxInput(InputInterface):
     def absolute_move(self, x: int, y: int):
         """Move cursor to absolute position.
         
-        Converts grim coordinates to compositor coordinates using the
-        detected scale factor, then uses ydotool --absolute.
+        Uses hyprctl cursorpos to get actual position, then EV_REL delta.
+        ydotool --absolute is broken on Hyprland (non-linear coordinate mapping),
+        so we avoid it entirely for absolute positioning.
         """
         target_x, target_y = int(x), int(y)
         
-        # Convert grim coords to compositor coords
-        comp_x = int(target_x * self._grim_scale_x)
-        comp_y = int(target_y * self._grim_scale_y)
+        # Get ACTUAL cursor position from compositor
+        actual = self._get_cursor_pos_hyprctl()
+        if actual:
+            current_x, current_y = actual
+        else:
+            # Fallback to internal tracking
+            current_x = int(self._cursor_x)
+            current_y = int(self._cursor_y)
         
-        # Clamp to screen bounds
-        comp_x = max(0, min(3840, comp_x))
-        comp_y = max(0, min(2160, comp_y))
+        # Calculate delta
+        delta_x = target_x - current_x
+        delta_y = target_y - current_y
         
-        self._ensure_ydotoold()
+        # Clamp deltas to int16 range (evdev uses int16 for REL)
+        delta_x = max(-32768, min(32767, delta_x))
+        delta_y = max(-32768, min(32767, delta_y))
         
-        try:
-            result = subprocess.run(
-                ["ydotool", "mousemove", "--absolute", "-x", str(comp_x), "-y", str(comp_y)],
-                capture_output=True, timeout=2
-            )
-            if result.returncode == 0:
-                self._cursor_x = target_x
-                self._cursor_y = target_y
-                return
-        except Exception:
-            pass
+        # Send relative movement via uinput
+        if delta_x != 0:
+            self.ui.write(ecodes.EV_REL, ecodes.REL_X, delta_x)
+        if delta_y != 0:
+            self.ui.write(ecodes.EV_REL, ecodes.REL_Y, delta_y)
+        self.ui.syn()
         
-        # Fallback: use EV_REL from internal tracking
-        self.move_mouse(target_x, target_y)
+        # Update internal tracking to TARGET (not current + delta)
+        self._cursor_x = target_x
+        self._cursor_y = target_y
 
     def set_screen_resolution(self, width: int, height: int):
         self.screen_width = width
