@@ -86,8 +86,8 @@ START_PATH_BIAS = 0.11  # Retroceso inicial para alargar el trazo (0.13 = 13%)
 END_PATH_BIAS = 0.12    # Adelantamiento final para alargar el trazo (0.12 = 12%)
 MIN_COLORS_TO_SOLVE = 3 # Cantidad mínima de colores para intentar resolver
 
-STEP_DELAY_MS = 1         # Delay por paso entre casillas (general)
-FINAL_STEP_DELAY_MS = 1   # Delay por paso en la recta final
+STEP_DELAY_MS = 10         # Delay por paso entre casillas (general)
+FINAL_STEP_DELAY_MS = 10   # Delay por paso en la recta final
 
 # Configuración Persistente usando platformdirs
 CONFIG_DIR = platformdirs.user_config_dir("forsaken_ac", "RickStyles")
