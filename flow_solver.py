@@ -74,8 +74,8 @@ AUTO_ADJUST_GRID_ON_SOLVE = True # Si True, intenta detectar y centrar el grid a
 
 # CRONOMETRAJE (Segundos)
 WOBBLE_DURATION_START = 0.09  # Tiempo del wobble inicial (agarre)
-DELAY_BEFORE_MOUSEDOWN = 0.01 # Pausa tras llegar al punto antes de clickar (Evita clicks fantasma)
-DELAY_BETWEEN_COLORS = 0.004    # Pausa tras soltar un color antes de ir al siguiente
+DELAY_BEFORE_MOUSEDOWN = 0.05 # Pausa tras llegar al punto antes de clickar (Evita clicks fantasma)
+DELAY_BETWEEN_COLORS = 0.05    # Pausa tras soltar un color antes de ir al siguiente
 END_NODE_HOLD_TIME_MS = 35       # (NUEVO) Milisegundos de espera antes de soltar el click al final del trazo
 MOUSE_INTERPOLATION_STEPS = 13 # Pasos de interpolación entre puntos (Más alto = más suave, más lento)
 WOBBLE_LOOP_SLEEP = 0.01       # Pausa dentro del bucle de wobble (Afecta velocidad de giro)
