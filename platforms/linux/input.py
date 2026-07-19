@@ -1,10 +1,9 @@
 try:
     import evdev
-    from evdev import ecodes, AbsInfo
+    from evdev import ecodes
 except ImportError:
     evdev = None
     ecodes = None
-    AbsInfo = None
 
 import os
 import subprocess
@@ -16,8 +15,8 @@ from core.input_interface import InputInterface
 class LinuxInput(InputInterface):
     """
     Input via evdev uinput — keyboard AND mouse.
-    Uses Hybrid EV_ABS for absolute warping to path starts,
-    and EV_REL for relative drawing paths to bypass pointer confinement issues in games.
+    Uses Hyprland's native Lua dispatcher for absolute warping,
+    and EV_REL relative virtual mouse movements for precise drawing.
     """
     
     def __init__(self):
@@ -51,16 +50,11 @@ class LinuxInput(InputInterface):
                 ecodes.KEY_J, ecodes.KEY_W, ecodes.KEY_A, ecodes.KEY_S, ecodes.KEY_D,
                 ecodes.KEY_F4,
                 ecodes.BTN_LEFT, ecodes.BTN_RIGHT, ecodes.BTN_MIDDLE,
-                ecodes.BTN_TOUCH, ecodes.BTN_TOOL_FINGER,
             ],
             ecodes.EV_REL: [
                 ecodes.REL_X,
                 ecodes.REL_Y,
                 ecodes.REL_WHEEL,
-            ],
-            ecodes.EV_ABS: [
-                (ecodes.ABS_X, AbsInfo(value=0, min=0, max=self.screen_width, fuzz=0, flat=0, resolution=0)),
-                (ecodes.ABS_Y, AbsInfo(value=0, min=0, max=self.screen_height, fuzz=0, flat=0, resolution=0)),
             ]
         }
 
@@ -89,7 +83,7 @@ class LinuxInput(InputInterface):
         self._ev_scale_x = 1.0
         self._ev_scale_y = 1.0
 
-        print(f"   🖱️  Mouse: Hybrid EV_ABS/EV_REL mode - {self.screen_width}x{self.screen_height}")
+        print(f"   🖱️  Mouse: Hybrid Native-Warp/EV_REL mode - {self.screen_width}x{self.screen_height}")
 
         # Perform scale calibration for drawing
         self._calibrate_ev_scale()
@@ -183,11 +177,15 @@ class LinuxInput(InputInterface):
             print(f"   ⚠️ EV_REL scale calibration failed: {e}")
 
     def absolute_move(self, x: int, y: int):
-        """Move cursor to absolute position using EV_ABS."""
+        """Move cursor to absolute position using Hyprland's native Lua dispatcher."""
         target_x, target_y = int(x), int(y)
-        self.ui.write(ecodes.EV_ABS, ecodes.ABS_X, target_x)
-        self.ui.write(ecodes.EV_ABS, ecodes.ABS_Y, target_y)
-        self.ui.syn()
+        try:
+            subprocess.run(
+                ["hyprctl", "dispatch", f"hl.dsp.cursor.move({{x={target_x}, y={target_y}}})"],
+                capture_output=True, timeout=2
+            )
+        except Exception:
+            pass
         self._cursor_x = target_x
         self._cursor_y = target_y
 
@@ -277,17 +275,11 @@ class LinuxInput(InputInterface):
     def mouse_down(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 1)
-        if button == 'left':
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 1)
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 1)
         self.ui.syn()
 
     def mouse_up(self, button: str = 'left'):
         btn_code = ecodes.BTN_LEFT if button == 'left' else ecodes.BTN_RIGHT
         self.ui.write(ecodes.EV_KEY, btn_code, 0)
-        if button == 'left':
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOUCH, 0)
-            self.ui.write(ecodes.EV_KEY, ecodes.BTN_TOOL_FINGER, 0)
         self.ui.syn()
 
     def click(self, x: int, y: int, button: str = 'left'):
@@ -297,7 +289,7 @@ class LinuxInput(InputInterface):
         self.mouse_up(button)
 
     def drag(self, start_x: int, start_y: int, end_x: int, end_y: int, duration: float = 0.0):
-        self.move_mouse(start_x, start_y)
+        self.absolute_move(start_x, start_y)
         time.sleep(0.05)
         self.mouse_down()
         if duration > 0:
