@@ -76,6 +76,9 @@ class LinuxInput(InputInterface):
         except TypeError:
             self.ui = evdev.UInput(cap, name='Forsaken-Auto-Input', version=0x1)
 
+        # Allow compositor to register the virtual device
+        time.sleep(1.0)
+
         self._key_map = self._build_key_map()
 
         # Internal cursor position tracking (absolute pixels on screen)
