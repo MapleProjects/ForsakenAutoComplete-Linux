@@ -74,16 +74,16 @@ AUTO_ADJUST_GRID_ON_SOLVE = True # Si True, intenta detectar y centrar el grid a
 
 # CRONOMETRAJE (Segundos)
 WOBBLE_DURATION_START = 0.09  # Tiempo del wobble inicial (agarre)
-DELAY_BEFORE_MOUSEDOWN = 0.05 # Pausa tras llegar al punto antes de clickar (Evita clicks fantasma)
-DELAY_BETWEEN_COLORS = 0.05    # Pausa tras soltar un color antes de ir al siguiente
-END_NODE_HOLD_TIME_MS = 35       # (NUEVO) Milisegundos de espera antes de soltar el click al final del trazo
+DELAY_BEFORE_MOUSEDOWN = 0.12 # Pausa tras llegar al punto antes de clickar (Evita clicks fantasma en Wine)
+DELAY_BETWEEN_COLORS = 0.10    # Pausa tras soltar un color antes de ir al siguiente
+END_NODE_HOLD_TIME_MS = 150       # (NUEVO) Milisegundos de espera antes de soltar el click al final del trazo
 MOUSE_INTERPOLATION_STEPS = 13 # Pasos de interpolación entre puntos (Más alto = más suave, más lento)
 WOBBLE_LOOP_SLEEP = 0.01       # Pausa dentro del bucle de wobble (Afecta velocidad de giro)
 
 # GEOMETRÍA (Porcentajes del tamaño de celda)
-WOBBLE_RATIO = 0.26       # Tamaño del rombo de agarre (0.30 = 30%)
-START_PATH_BIAS = 0.20  # Retroceso inicial para alargar el trazo (0.20 = 20%)
-END_PATH_BIAS = 0.28    # Adelantamiento final para alargar el trazo (0.28 = 28%)
+WOBBLE_RATIO = 0.15       # Tamaño del movimiento de agarre en el nodo inicial
+START_PATH_BIAS = 0.0   # Centro exacto del nodo inicial (0.0 = centro)
+END_PATH_BIAS = 0.0     # Centro exacto del nodo final (0.0 = centro)
 MIN_COLORS_TO_SOLVE = 3 # Cantidad mínima de colores para intentar resolver
 
 STEP_DELAY_MS = 10         # Delay por paso entre casillas (general)
@@ -1831,7 +1831,17 @@ class FlowPuzzleSolver:
             avg_s = int(np.mean([c[3] for c in cluster]))
             avg_v = int(np.mean([c[4] for c in cluster]))
             
-            for (row, col, _, _, _) in cluster:
+            positions = [(c[0], c[1]) for c in cluster]
+            if len(positions) > 2:
+                degree_1 = []
+                for r, c in positions:
+                    neighbors_in_cluster = sum(1 for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)] if (r+dr, c+dc) in positions)
+                    if neighbors_in_cluster <= 1:
+                        degree_1.append((r, c))
+                if len(degree_1) == 2:
+                    positions = degree_1
+
+            for (row, col) in positions:
                 endpoints[(row, col)] = color_id
             
             id_to_color_map[color_id] = f"C{color_id}(H{avg_h}S{avg_s}V{avg_v})"
@@ -2036,30 +2046,14 @@ class FlowPuzzleSolver:
         except Exception:
             pass
         return None, None
-
     def draw_solution(self, solutions, grid_origin, grid_rect_size):
         cell_w = grid_rect_size[0] / GRID_SIZE
         cell_h = grid_rect_size[1] / GRID_SIZE
-        
-        # Recalibrate scale factors at the exact moment of drawing
-        if hasattr(self.input, '_calibrate_ev_scale'):
-            print("   📏 Recalibrando escala de dibujo...")
-            self.input._calibrate_ev_scale()
 
         # === SCALE DETECTION: grim resolution vs ydotool coordinate space ===
         # grim captures at physical pixel resolution (Wayland output).
         # ydotool absolute uses the compositor's logical coordinate space.
         # If display scaling or mirrored outputs differ, we need a scale factor.
-        grim_w = grid_origin[0] + grid_rect_size[0]  # right edge in grim coords
-        grim_h = grid_origin[1] + grid_rect_size[1]  # bottom edge in grim coords
-        
-        # Move cursor to grid center using grim coords
-        grid_cx = grid_origin[0] + grid_rect_size[0] // 2
-        grid_cy = grid_origin[1] + grid_rect_size[1] // 2
-        if hasattr(self.input, 'absolute_move'):
-            self.input.absolute_move(grid_cx, grid_cy)
-        else:
-            self.input.move_mouse(grid_cx, grid_cy)
         time.sleep(0.15)  # Pause for cursor to settle
         
         # === POSITION SYNC: get actual cursor position ONCE before drawing ===
@@ -2127,10 +2121,10 @@ class FlowPuzzleSolver:
             if emergency_stop_flag: return
             self.input.mouse_down()
             
-            # Wobble (usar promedio de cell_w y cell_h para el cálculo del radio)
+            # Ejecutar wobble inicial de agarre
             avg_cell_size = (cell_w + cell_h) / 2
-            # Wobble center must also be in ydotool coords (already scaled in points_int)
             self._perform_spiral_wobble(target_x, target_y, cell_size=avg_cell_size)
+            time.sleep(0.04)
             
             # Draw Path
             for i in range(1, len(points_int)):
@@ -2294,6 +2288,7 @@ def _on_movement_interrupt():
     emergency_stop_flag = True
 
 def main():
+    load_config()
     print("=" * 60)
     print("🎮 Forsaken AutoComplete (Linux Edition)")
     print(f"   Platform: {sys.platform}")
@@ -2322,6 +2317,16 @@ def main():
         HOTKEY_MANAGER.start()
     else:
         print("   ⚠️  No evdev hotkey manager available!")
+
+    is_headless = any(arg in sys.argv for arg in ['--cli', '--no-gui', '--headless']) or os.environ.get("HEADLESS") == "1"
+    if is_headless:
+        print("⚡ Modo Sin Interfaz Gráfica (Headless/CLI). Presiona J para resolver, Alt+J para calibrar grid, Ctrl+C para salir.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n👋 Cerrando solver...")
+            sys.exit(0)
 
     # --- INTERFAZ GRÁFICA (GUI) ---
     try:
